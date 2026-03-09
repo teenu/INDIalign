@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-import scoring._tmscore_gpu.runtime as rt
+from . import runtime as rt
 
 
 def _eigh_largest_eigvec_4x4(F: torch.Tensor) -> torch.Tensor:
@@ -227,21 +227,15 @@ def _tm_score_impl(
     return term.sum(dim=1) / denom
 
 
-_tm_score = _tm_score_impl
-_tm_score_compiled: object = None
-
-
 def _activate_torch_compile() -> None:
-    """Replace _tm_score with a torch.compiled version (called once at config time)."""
-    global _tm_score, _tm_score_compiled
-    if _tm_score_compiled is None:
-        _tm_score_compiled = torch.compile(_tm_score_impl, dynamic=True)
-    _tm_score = _tm_score_compiled
+    """Replace rt._tm_score with a torch.compiled version."""
+    if rt._tm_score_compiled is None:
+        rt._tm_score_compiled = torch.compile(_tm_score_impl, dynamic=True)
+    rt._tm_score = rt._tm_score_compiled
 
 
 def _deactivate_torch_compile() -> None:
-    global _tm_score
-    _tm_score = _tm_score_impl
+    rt._tm_score = _tm_score_impl
 
 
 def _tm_score_fused(
@@ -258,7 +252,7 @@ def _tm_score_fused(
     if rt._can_use_triton_score(pred) and R.is_contiguous() and t.is_contiguous():
         return rt._tm_score_fused_triton(pred, native, valid, R, t, d0, Lnorm, score_d8)
     moved = _apply_transform(pred, R, t)
-    return _tm_score(moved, native, valid, d0, Lnorm, score_d8=score_d8)
+    return rt._tm_score(moved, native, valid, d0, Lnorm, score_d8=score_d8)
 
 
 def _weighted_refine_chunk_size(

@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
-import scoring._local_validation_gpu.runtime as rt
+from . import runtime as rt
 
 
 def main() -> None:

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import torch
 
-import scoring._tmscore_gpu.runtime as rt
+from . import dp as _dp
+from . import runtime as rt
 
 
 def _fragment_lengths(max_len: int) -> list[int]:
@@ -193,10 +194,9 @@ def _build_pairwise_anchor_contact_seed_masks(
         pd = torch.cdist(pred_b, pred_b).squeeze(0)
         nd = torch.cdist(native_b, native_b).squeeze(0)
         vp = valid_b.unsqueeze(0) & valid_b.unsqueeze(1)
-        seeds_b: list[torch.Tensor] = []
+        seed_bank_b = torch.zeros((0, N), dtype=torch.bool, device=device)
 
-        for radius in radii[b]:
-            rad = float(radius.item())
+        for rad in radii[b].tolist():
             if rad <= 0.0:
                 continue
             tol = max(0.5, rad * rt._CONTACT_SEED_TOL_MULT)
@@ -204,30 +204,28 @@ def _build_pairwise_anchor_contact_seed_masks(
             consistent = (pd - nd).abs() <= tol
             masks = local & consistent
             counts = masks.sum(dim=1)
-            good = valid_b & (counts >= 3)
-            if not bool(good.any()):
+            good_idx = torch.nonzero(valid_b & (counts >= 3), as_tuple=False).squeeze(1)
+            if good_idx.numel() == 0:
                 continue
 
-            order = torch.argsort(counts, descending=True)
-            picked = 0
-            for anchor_idx in order.tolist():
-                if not bool(good[anchor_idx]):
-                    continue
-                seed = masks[anchor_idx] & valid_b
-                if int(seed.sum().item()) < 3:
-                    continue
-                duplicate = any(torch.equal(seed, prev) for prev in seeds_b)
-                if duplicate:
-                    continue
-                seeds_b.append(seed)
-                picked += 1
-                if picked >= rt._CONTACT_SEED_MAX_ANCHORS:
-                    break
-
-        if seeds_b:
-            seed_bank_b = torch.stack(seeds_b, dim=0)
-        else:
-            seed_bank_b = torch.zeros((0, N), dtype=torch.bool, device=device)
+            order = good_idx[torch.argsort(counts.index_select(0, good_idx), descending=True)]
+            cand_seeds = masks.index_select(0, order)
+            if seed_bank_b.shape[0] > 0:
+                dup_existing = (cand_seeds.unsqueeze(1) == seed_bank_b.unsqueeze(0)).all(dim=2).any(dim=1)
+                cand_seeds = cand_seeds[~dup_existing]
+            if cand_seeds.shape[0] > 1:
+                dup_prev = torch.triu(
+                    (cand_seeds.unsqueeze(1) == cand_seeds.unsqueeze(0)).all(dim=2),
+                    diagonal=1,
+                ).any(dim=0)
+                cand_seeds = cand_seeds[~dup_prev]
+            if cand_seeds.shape[0] == 0:
+                continue
+            cand_seeds = cand_seeds[: rt._CONTACT_SEED_MAX_ANCHORS]
+            if seed_bank_b.shape[0] == 0:
+                seed_bank_b = cand_seeds
+            else:
+                seed_bank_b = torch.cat([seed_bank_b, cand_seeds], dim=0)
         pair_masks.append(seed_bank_b)
         max_k = max(max_k, seed_bank_b.shape[0])
 
@@ -265,8 +263,8 @@ def _evaluate_seed_bank(
         )
 
     search_score_d8 = score_d8 if rt._SEARCH_SELECTION_USES_SCORE_D8 else None
-    seed_all = seed_bank.unsqueeze(2).expand(B, K, C, N).reshape(B, K * C, N)
-    KM = seed_all.shape[1]
+    selective_refine = rt._tm_weighted_refine_is_selective()
+    KM = K * C
     chunk_b, chunk_km = rt._pairseed_chunk_plan(B, N, KM, dtype, max_mem_gb)
 
     eye3 = torch.eye(3, dtype=dtype, device=device)
@@ -282,90 +280,76 @@ def _evaluate_seed_bank(
         p = pred[start:end]
         n = native[start:end]
         v = valid[start:end]
-        sa = seed_all[start:end]
-
-        d0s_full = d0_candidates[start:end].unsqueeze(1).expand(cb, K, C).reshape(cb, KM)
-        ln_full = Lnorm[start:end].unsqueeze(1).expand(cb, KM)
-        d0_full = d0[start:end].unsqueeze(1).expand(cb, KM)
-        sd8_full = (
-            search_score_d8[start:end].unsqueeze(1).expand(cb, KM)
-            if search_score_d8 is not None
-            else None
-        )
+        seed_chunk = seed_bank[start:end]
+        d0_candidates_chunk = d0_candidates[start:end]
+        d0_chunk = d0[start:end]
+        ln_chunk = Lnorm[start:end]
+        sd8_chunk = search_score_d8[start:end] if search_score_d8 is not None else None
 
         best_sc_chunk = torch.full((cb,), -torch.inf, dtype=dtype, device=device)
         best_R_chunk = eye3.unsqueeze(0).expand(cb, 3, 3).clone()
         best_t_chunk = torch.zeros(cb, 3, dtype=dtype, device=device)
+        scores_full = torch.empty((cb, KM), dtype=dtype, device=device) if selective_refine else None
 
         for k0 in range(0, KM, chunk_km):
             k1 = min(k0 + chunk_km, KM)
             ks = k1 - k0
+            flat_idx = torch.arange(k0, k1, device=device)
+            seed_idx = torch.div(flat_idx, C, rounding_mode="floor")
+            cand_idx = torch.remainder(flat_idx, C)
 
-            sa_k = sa[:, k0:k1]
+            sa_k = seed_chunk.index_select(1, seed_idx)
+            d0s_k = d0_candidates_chunk.index_select(1, cand_idx)
+            d0_k = d0_chunk.unsqueeze(1).expand(cb, ks)
+            ln_k = ln_chunk.unsqueeze(1).expand(cb, ks)
+            sd8_k = sd8_chunk.unsqueeze(1).expand(cb, ks) if sd8_chunk is not None else None
             p_exp = p.unsqueeze(1).expand(cb, ks, N, 3).reshape(cb * ks, N, 3)
             n_exp = n.unsqueeze(1).expand(cb, ks, N, 3).reshape(cb * ks, N, 3)
             v_exp = v.unsqueeze(1).expand(cb, ks, N).reshape(cb * ks, N)
             s_flat = sa_k.reshape(cb * ks, N)
+            d0s_flat = d0s_k.reshape(cb * ks)
+            d0_flat = d0_k.reshape(cb * ks)
+            ln_flat = ln_k.reshape(cb * ks)
+            sd8_flat = sd8_k.reshape(cb * ks) if sd8_k is not None else None
 
             R_all, t_all = _iterative_seed_refine(
                 p_exp,
                 n_exp,
                 v_exp,
                 s_flat,
-                d0s_full[:, k0:k1].reshape(cb * ks),
+                d0s_flat,
                 max_iter,
             )
-            scores = None
-            if rt._TM_WEIGHTED_REFINE_ITERS > 0:
-                if rt._tm_weighted_refine_refines_all(ks) and rt._TM_WEIGHTED_REFINE_SCORE_MARGIN <= 0.0:
-                    R_all, t_all, scores = rt._tm_weighted_refine(
-                        p_exp,
-                        n_exp,
-                        v_exp,
-                        R_all,
-                        t_all,
-                        d0_full[:, k0:k1].reshape(cb * ks),
-                        ln_full[:, k0:k1].reshape(cb * ks),
-                        score_d8=sd8_full[:, k0:k1].reshape(cb * ks) if sd8_full is not None else None,
-                        max_iter=rt._TM_WEIGHTED_REFINE_ITERS,
-                        max_mem_gb=max_mem_gb,
-                    )
-                else:
-                    scores = rt._tm_score_fused(
-                        p_exp, n_exp, v_exp, R_all, t_all,
-                        d0_full[:, k0:k1].reshape(cb * ks),
-                        ln_full[:, k0:k1].reshape(cb * ks),
-                        sd8_full[:, k0:k1].reshape(cb * ks) if sd8_full is not None else None,
-                    )
-                    scores_2d = scores.reshape(cb, ks)
-                    refine_mask_2d = rt._weighted_refine_candidate_mask(scores_2d)
-                    if bool(refine_mask_2d.any()):
-                        refine_idx = torch.nonzero(refine_mask_2d.reshape(cb * ks), as_tuple=False).squeeze(1)
-                        r_ref, t_ref, sc_ref = rt._tm_weighted_refine(
-                            p_exp.index_select(0, refine_idx),
-                            n_exp.index_select(0, refine_idx),
-                            v_exp.index_select(0, refine_idx),
-                            R_all.index_select(0, refine_idx),
-                            t_all.index_select(0, refine_idx),
-                            d0_full[:, k0:k1].reshape(cb * ks).index_select(0, refine_idx),
-                            ln_full[:, k0:k1].reshape(cb * ks).index_select(0, refine_idx),
-                            score_d8=(
-                                sd8_full[:, k0:k1].reshape(cb * ks).index_select(0, refine_idx)
-                                if sd8_full is not None
-                                else None
-                            ),
-                            max_iter=rt._TM_WEIGHTED_REFINE_ITERS,
-                            max_mem_gb=max_mem_gb,
-                        )
-                        R_all[refine_idx] = r_ref
-                        t_all[refine_idx] = t_ref
-                        scores[refine_idx] = sc_ref
+            if selective_refine:
+                scores = rt._tm_score_fused(
+                    p_exp, n_exp, v_exp, R_all, t_all,
+                    d0_flat,
+                    ln_flat,
+                    sd8_flat,
+                )
+                scores_2d = scores.reshape(cb, ks)
+                scores_full[:, k0:k1] = scores_2d
+            else:
+                scores = None
+            if not selective_refine and rt._TM_WEIGHTED_REFINE_ITERS > 0:
+                R_all, t_all, scores = rt._tm_weighted_refine(
+                    p_exp,
+                    n_exp,
+                    v_exp,
+                    R_all,
+                    t_all,
+                    d0_flat,
+                    ln_flat,
+                    score_d8=sd8_flat,
+                    max_iter=rt._TM_WEIGHTED_REFINE_ITERS,
+                    max_mem_gb=max_mem_gb,
+                )
             if scores is None:
                 scores = rt._tm_score_fused(
                     p_exp, n_exp, v_exp, R_all, t_all,
-                    d0_full[:, k0:k1].reshape(cb * ks),
-                    ln_full[:, k0:k1].reshape(cb * ks),
-                    sd8_full[:, k0:k1].reshape(cb * ks) if sd8_full is not None else None,
+                    d0_flat,
+                    ln_flat,
+                    sd8_flat,
                 )
             scores_2d = scores.reshape(cb, ks)
             best_local_sc, best_local_idx = scores_2d.max(dim=1)
@@ -376,6 +360,54 @@ def _evaluate_seed_bank(
                 best_R_chunk[better_local] = R_cands[better_local]
                 best_t_chunk[better_local] = t_cands[better_local]
                 best_sc_chunk[better_local] = best_local_sc[better_local]
+
+        if selective_refine and rt._TM_WEIGHTED_REFINE_ITERS > 0:
+            refine_mask_full = rt._weighted_refine_candidate_mask(scores_full)
+            for k0 in range(0, KM, chunk_km):
+                k1 = min(k0 + chunk_km, KM)
+                ks = k1 - k0
+                flat_idx = torch.arange(k0, k1, device=device)
+                seed_idx = torch.div(flat_idx, C, rounding_mode="floor")
+                cand_idx = torch.remainder(flat_idx, C)
+
+                refine_idx = torch.nonzero(
+                    refine_mask_full[:, k0:k1].reshape(cb * ks),
+                    as_tuple=False,
+                ).squeeze(1)
+                if refine_idx.numel() == 0:
+                    continue
+
+                ref_b = torch.div(refine_idx, ks, rounding_mode="floor")
+                ref_s = torch.remainder(refine_idx, ks)
+                p_sel = p[ref_b]
+                n_sel = n[ref_b]
+                v_sel = v[ref_b]
+                s_sel = seed_chunk[ref_b, seed_idx[ref_s]]
+                d0s_sel = d0_candidates_chunk[ref_b, cand_idx[ref_s]]
+
+                R_seed, t_seed = _iterative_seed_refine(
+                    p_sel, n_sel, v_sel, s_sel, d0s_sel, max_iter,
+                )
+                r_ref, t_ref, sc_ref = rt._tm_weighted_refine(
+                    p_sel, n_sel, v_sel, R_seed, t_seed,
+                    d0_chunk[ref_b],
+                    ln_chunk[ref_b],
+                    score_d8=sd8_chunk[ref_b] if sd8_chunk is not None else None,
+                    max_iter=rt._TM_WEIGHTED_REFINE_ITERS,
+                    max_mem_gb=max_mem_gb,
+                )
+
+                ref_scores = torch.full((cb * ks,), -torch.inf, dtype=dtype, device=device)
+                ref_scores[refine_idx] = sc_ref
+                best_ref_sc, best_ref_idx = ref_scores.reshape(cb, ks).max(dim=1)
+                better_ref = best_ref_sc > best_sc_chunk
+                if better_ref.any():
+                    better_bidx = torch.nonzero(better_ref, as_tuple=False).squeeze(1)
+                    target_flat = better_bidx * ks + best_ref_idx[better_bidx]
+                    pos = torch.searchsorted(refine_idx, target_flat)
+                    best_R_chunk[better_bidx] = r_ref[pos]
+                    best_t_chunk[better_bidx] = t_ref[pos]
+                    best_sc_chunk[better_ref] = best_ref_sc[better_ref]
 
         best_R[start:end] = best_R_chunk
         best_t[start:end] = best_t_chunk
@@ -394,7 +426,6 @@ def _iterative_seed_refine(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     work = seed_mask & valid
     B = pred.shape[0]
-    dtype = pred.dtype
     device = pred.device
 
     use_triton_refine = rt._can_use_triton_refine(pred, native, valid) and d0_search.is_contiguous()
@@ -578,7 +609,7 @@ def tmscore_search(
 
     # DP refinement: iterative NW alignment discovery
     if dp_iter > 0:
-        dp_R, dp_t, dp_score = rt._dp_refine(
+        dp_R, dp_t, dp_score = _dp._dp_refine(
             pred, native, valid, best_R, best_t, d0, score_d8, Lnorm, dp_iter,
             pred_valid=pred_valid, native_valid=native_valid,
         )
@@ -596,7 +627,7 @@ def tmscore_search(
         if pred_valid is not None and native_valid is not None:
             id_R = eye3.unsqueeze(0).expand(B, 3, 3).clone()
             id_t = torch.zeros(B, 3, dtype=dtype, device=device)
-            id_dp_R, id_dp_t, id_dp_score = rt._dp_refine(
+            id_dp_R, id_dp_t, id_dp_score = _dp._dp_refine(
                 pred, native, valid, id_R, id_t, d0, score_d8, Lnorm,
                 dp_iter, pred_valid=pred_valid, native_valid=native_valid,
             )

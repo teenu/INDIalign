@@ -223,6 +223,8 @@ def configure_pair_local_search(
         _TM_WEIGHTED_REFINE_TOPK = max(0, int(tm_weighted_refine_topk))
     if tm_weighted_refine_score_margin is not None:
         _TM_WEIGHTED_REFINE_SCORE_MARGIN = max(0.0, float(tm_weighted_refine_score_margin))
+    if 1.0 in _CONTACT_SEED_MULTS and 0.0 in _CONTACT_SEED_ADD_OFFSETS:
+        _CONTACT_SEED_ADD_OFFSETS = tuple(v for v in _CONTACT_SEED_ADD_OFFSETS if v != 0.0)
 
 
 def _d0_search_candidates(d0_search: torch.Tensor) -> torch.Tensor:

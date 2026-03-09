@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-import scoring._tmscore_gpu.runtime as rt
+from . import runtime as rt
 
 
 def _score_matrix(

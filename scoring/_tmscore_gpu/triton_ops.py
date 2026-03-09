@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import torch
 
-try:
-    import triton
-    import triton.language as tl
-    _HAS_TRITON = True
-except Exception:
-    triton = None
-    tl = None
-    _HAS_TRITON = False
+from . import runtime as rt
 
-import scoring._tmscore_gpu.runtime as rt
+triton = rt.triton
+tl = rt.tl
 
 
 def _triton_select_launch_config(device: torch.device, N: int) -> tuple[int, int, int]:
@@ -88,7 +82,7 @@ def _triton_kabsch_launch_config(device: torch.device, N: int) -> tuple[int, int
 
 def _can_use_triton_kabsch(P: torch.Tensor, Q: torch.Tensor, mask: torch.Tensor) -> bool:
     return bool(
-        _HAS_TRITON
+        rt._HAS_TRITON
         and rt._ENABLE_TRITON_KABSCH
         and P.is_cuda
         and Q.is_cuda
@@ -105,7 +99,7 @@ def _can_use_triton_kabsch(P: torch.Tensor, Q: torch.Tensor, mask: torch.Tensor)
 
 def _can_use_triton_refine(pred: torch.Tensor, native: torch.Tensor, valid: torch.Tensor) -> bool:
     return bool(
-        _HAS_TRITON
+        rt._HAS_TRITON
         and rt._ENABLE_TRITON_REFINE
         and pred.is_cuda
         and native.is_cuda
@@ -120,7 +114,7 @@ def _can_use_triton_refine(pred: torch.Tensor, native: torch.Tensor, valid: torc
     )
 
 
-if _HAS_TRITON:
+if rt._HAS_TRITON:
     @triton.jit
     def _select_mask_kernel(
         P_ptr, Q_ptr, R_ptr, T_ptr, V_ptr, D0SQ_ptr, OUT_ptr, FLAG_ptr,
@@ -595,7 +589,7 @@ def _can_use_triton_score(pred: torch.Tensor) -> bool:
     # No min-B gate: one program per batch element with a full N-loop,
     # so even B=1 amortises the single kernel launch vs ~7 torch launches.
     return bool(
-        _HAS_TRITON
+        rt._HAS_TRITON
         and rt._ENABLE_TRITON_SCORE
         and pred.is_cuda
         and pred.dtype == torch.float32
