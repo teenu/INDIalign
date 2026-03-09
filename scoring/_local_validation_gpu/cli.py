@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from pathlib import Path
 
@@ -15,13 +14,10 @@ from . import runtime as rt
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="GPU local TM-score validation (additive alternative to local_validation_mt.py)."
+        description="GPU local TM-score validation."
     )
     parser.add_argument("submission", type=str, help="Path to submission.csv")
     parser.add_argument("--validation", type=str, default=None, help="Path to validation_labels.csv")
-    parser.add_argument("--usalign", type=str, default=None, help="Accepted for compatibility but ignored")
-    parser.add_argument("--workers", type=int, default=0, help="Accepted for compatibility but ignored")
-    parser.add_argument("--mode", type=str, default="thread", choices=["thread", "process"], help="Compatibility flag")
     parser.add_argument("--device", type=str, default=None, help="Torch device (default: cuda if available)")
     fs_group = parser.add_mutually_exclusive_group()
     fs_group.add_argument(
@@ -37,16 +33,6 @@ def main() -> None:
     parser.add_argument("--max-iter", type=int, default=None, help="Refinement iterations per seed (default: 20, 8 for ultrafast)")
     parser.add_argument("--max-mem-gb", type=float, default=rt.DEFAULT_MAX_MEM_GB, help="GPU memory budget in GB")
     parser.add_argument("--dp-iter", type=int, default=rt.DEFAULT_DP_ITER, help="NW DP alignment iterations (0=off)")
-    parser.add_argument(
-        "--exact-rescore-topk",
-        type=int,
-        default=rt.DEFAULT_EXACT_RESCORE_TOPK,
-        help=(
-            "Rescore the GPU top-k submitted conformers per target with USalign. "
-            "0 disables exact rescoring. Values >=3 recover USalign-best conformer "
-            "for this validation submission."
-        ),
-    )
     parser.add_argument("--float64", action="store_true", help="Use float64 precision (slower, for validation)")
     parser.add_argument(
         "--backend-mode",
@@ -85,13 +71,10 @@ def main() -> None:
     submission = pd.read_csv(args.submission)
     validation = pd.read_csv(validation_path)
 
-    cpu_threads = os.cpu_count() or 1
     targets = submission["ID"].str.rsplit("_", n=1).str[0].nunique()
-    workers = args.workers if args.workers and args.workers > 0 else min(cpu_threads, targets)
 
     dev = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Detected CPU threads: {cpu_threads}")
-    print(f"Targets: {targets} | Requested workers: {workers}")
+    print(f"Targets: {targets}")
     print(f"Device: {dev}")
 
     if args.float64:
@@ -137,15 +120,11 @@ def main() -> None:
     mean_tm, per_target = rt.score_parallel(
         validation,
         submission,
-        usalign_bin=args.usalign or "",
-        workers=workers,
-        mode=args.mode,
         device=dev,
         max_iter=max_iter,
         use_fragment_search=use_fragment_search,
         max_mem_gb=float(args.max_mem_gb),
         dp_iter=int(args.dp_iter),
-        exact_rescore_topk=int(args.exact_rescore_topk),
     )
     if dev.startswith("cuda"):
         torch.cuda.synchronize(device=dev)

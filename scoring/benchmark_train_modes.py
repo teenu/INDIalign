@@ -76,14 +76,11 @@ def _run_gpu_mode(
     mean_tm, per_target = score_parallel(
         solution,
         submission,
-        usalign_bin="",
-        workers=0,
         device=device,
         max_iter=None,
         use_fragment_search=True,
         max_mem_gb=max_mem_gb,
         dp_iter=0,
-        exact_rescore_topk=0,
     )
     if device.startswith("cuda"):
         torch.cuda.synchronize(device=device)

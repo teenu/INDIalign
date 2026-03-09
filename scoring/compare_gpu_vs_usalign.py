@@ -60,8 +60,6 @@ def run_gpu_scoring(
     t0 = time.time()
     mean_tm, per_target = score_parallel(
         validation, submission,
-        usalign_bin="",
-        workers=0,
         device=device,
         max_iter=None,
         use_fragment_search=True,

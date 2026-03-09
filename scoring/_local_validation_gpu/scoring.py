@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 import itertools
 
 import numpy as np
@@ -76,19 +75,13 @@ def score_target(
     target_id: str,
     group_native: pd.DataFrame,
     group_predicted: pd.DataFrame,
-    usalign_bin: Optional[str] = None,
     device: Optional[str] = None,
     max_iter: int | None = None,
     use_fragment_search: bool = rt.DEFAULT_USE_FRAGMENT_SEARCH,
     max_mem_gb: float = rt.DEFAULT_MAX_MEM_GB,
     dp_iter: int = rt.DEFAULT_DP_ITER,
 ) -> float:
-    """Score a single target.
-
-    Signature intentionally mirrors local_validation_mt.score_target.
-    `usalign_bin` is accepted for API compatibility but ignored.
-    """
-    _ = usalign_bin
+    """Score a single target."""
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = rt._DEFAULT_DTYPE
 
@@ -180,21 +173,13 @@ def score_target(
 def score_parallel(
     solution: pd.DataFrame,
     submission: pd.DataFrame,
-    usalign_bin: str,
-    workers: int,
-    mode: str = "thread",
     device: Optional[str] = None,
     max_iter: int | None = None,
     use_fragment_search: bool = rt.DEFAULT_USE_FRAGMENT_SEARCH,
     max_mem_gb: float = rt.DEFAULT_MAX_MEM_GB,
     dp_iter: int = rt.DEFAULT_DP_ITER,
-    exact_rescore_topk: int = rt.DEFAULT_EXACT_RESCORE_TOPK,
 ) -> tuple[float, dict[str, float]]:
-    """Score all targets with cross-target batching for monomers.
-
-    Signature mirrors local_validation_mt.score_parallel. `workers`/`mode` are
-    accepted for compatibility; computation runs on a single GPU device.
-    """
+    """Score all targets with cross-target batching for monomers."""
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     dtype = rt._DEFAULT_DTYPE
 
@@ -232,25 +217,25 @@ def score_parallel(
         all_n: list[torch.Tensor] = []
         all_v: list[torch.Tensor] = []
         all_nv: list[torch.Tensor] = []
-        pair_map: list[tuple[str, int, list[int], int]] = []  # (tid, count, pred_ids, native_count)
+        pair_map: list[tuple[str, int]] = []
 
         for tid in group:
             gn, gp = sorted_dfs[tid]
             native_ids = rt._available_frames(gn, rt.MAX_NATIVE_FRAMES)
             pred_ids = rt._available_frames(gp, rt.MAX_PRED_FRAMES)
             if not pred_ids:
-                pair_map.append((tid, 0, [], 0))
+                pair_map.append((tid, 0))
                 continue
 
             nc, nv = rt.extract_coords(gn, native_ids, dev, dtype=dtype)
             pc, pv = rt.extract_coords(gp, pred_ids, dev, dtype=dtype)
             if nc.shape[0] == 0:
-                pair_map.append((tid, 0, pred_ids, 0))
+                pair_map.append((tid, 0))
                 continue
             keep = nv.any(dim=1)
             nc, nv = nc[keep], nv[keep]
             if nc.shape[0] == 0:
-                pair_map.append((tid, 0, pred_ids, 0))
+                pair_map.append((tid, 0))
                 continue
 
             P_cnt, N_len = pc.shape[0], pc.shape[1]
@@ -274,10 +259,10 @@ def score_parallel(
             all_n.append(n_pairs)
             all_v.append(v_pairs)
             all_nv.append(nv_pairs)
-            pair_map.append((tid, P_cnt * F_cnt, pred_ids, F_cnt))
+            pair_map.append((tid, P_cnt * F_cnt))
 
         if not all_p:
-            for tid, _, _, _ in pair_map:
+            for tid, _ in pair_map:
                 per_target.setdefault(tid, 0.0)
             continue
 
@@ -299,61 +284,25 @@ def score_parallel(
             )
 
         offset = 0
-        exact_jobs: list[tuple[str, list[int]]] = []
-        for tid, count, pred_ids, native_count in pair_map:
+        for tid, count in pair_map:
             if count > 0:
-                score_slice = scores[offset : offset + count]
-                per_target[tid] = float(score_slice.max().item())
-                if exact_rescore_topk > 0 and usalign_bin and pred_ids and native_count > 0:
-                    pred_cnt = min(len(pred_ids), max(1, int(exact_rescore_topk)))
-                    per_pred = score_slice.reshape(len(pred_ids), native_count).max(dim=1).values
-                    top_idx = torch.topk(per_pred, k=pred_cnt, largest=True).indices.tolist()
-                    exact_jobs.append((tid, [pred_ids[i] for i in top_idx]))
+                per_target[tid] = float(scores[offset : offset + count].max().item())
             else:
                 per_target[tid] = 0.0
             offset += count
 
-        if exact_jobs:
-            max_workers = workers if workers and workers > 0 else len(exact_jobs)
-            max_workers = max(1, min(max_workers, len(exact_jobs)))
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futs = {
-                    ex.submit(
-                        rt._exact_rescore_predictions,
-                        tid,
-                        sorted_dfs[tid][0],
-                        sorted_dfs[tid][1],
-                        pred_ids,
-                        usalign_bin,
-                        workers,
-                    ): tid
-                    for tid, pred_ids in exact_jobs
-                }
-                for fut, tid in [(f, futs[f]) for f in futs]:
-                    per_target[tid] = fut.result()
-
     # Multicopy targets: score individually (need permutation handling)
     for tid in multi_tids:
-        if exact_rescore_topk > 0 and usalign_bin:
-            from scoring.local_validation_mt import score_target as _score_target_mt
-
-            per_target[tid] = _score_target_mt(
-                tid,
-                groups_native[tid],
-                groups_pred[tid],
-                usalign_bin,
-            )
-        else:
-            per_target[tid] = score_target(
-                target_id=tid,
-                group_native=groups_native[tid],
-                group_predicted=groups_pred[tid],
-                device=dev,
-                max_iter=max_iter,
-                use_fragment_search=use_fragment_search,
-                max_mem_gb=max_mem_gb,
-                dp_iter=dp_iter,
-            )
+        per_target[tid] = score_target(
+            target_id=tid,
+            group_native=groups_native[tid],
+            group_predicted=groups_pred[tid],
+            device=dev,
+            max_iter=max_iter,
+            use_fragment_search=use_fragment_search,
+            max_mem_gb=max_mem_gb,
+            dp_iter=dp_iter,
+        )
 
     mean_tm = float(sum(per_target.values()) / len(per_target)) if per_target else 0.0
     return mean_tm, per_target

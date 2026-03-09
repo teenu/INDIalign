@@ -15,7 +15,6 @@ DEFAULT_USE_FRAGMENT_SEARCH = True
 DEFAULT_MAX_MEM_GB = 20.0
 DEFAULT_DP_ITER = 0
 DEFAULT_BACKEND_MODE = "strict"
-DEFAULT_EXACT_RESCORE_TOPK = 0
 _DEFAULT_DTYPE = tg._DEFAULT_DTYPE
 
 d0_from_length = tg.d0_from_length
@@ -38,7 +37,6 @@ _available_frames = _coords._available_frames
 extract_coords = _coords.extract_coords
 
 _score_pair_batches = _scoring._score_pair_batches
-_exact_rescore_predictions = _multimer._exact_rescore_predictions
 _multimer_group_indices = _multimer._multimer_group_indices
 _group_targets_by_length = _multimer._group_targets_by_length
 _icp_chain_candidates = _multimer._icp_chain_candidates

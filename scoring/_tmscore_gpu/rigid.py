@@ -227,17 +227,6 @@ def _tm_score_impl(
     return term.sum(dim=1) / denom
 
 
-def _activate_torch_compile() -> None:
-    """Replace rt._tm_score with a torch.compiled version."""
-    if rt._tm_score_compiled is None:
-        rt._tm_score_compiled = torch.compile(_tm_score_impl, dynamic=True)
-    rt._tm_score = rt._tm_score_compiled
-
-
-def _deactivate_torch_compile() -> None:
-    rt._tm_score = _tm_score_impl
-
-
 def _tm_score_fused(
     pred: torch.Tensor,
     native: torch.Tensor,

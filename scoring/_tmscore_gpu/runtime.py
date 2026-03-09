@@ -50,7 +50,6 @@ _MAX_FRAG_STARTS: int | None = None
 _MAX_ITER: int = 20
 _SEARCH_SELECTION_USES_SCORE_D8 = True
 _ENABLE_TRITON_SCORE = os.environ.get("BAMBOO_TRITON_SCORE", "0") != "0"
-_ENABLE_TORCH_COMPILE = False
 _CUDA_CAP_CACHE: dict[int, tuple[int, int]] = {}
 
 _DEFAULT_ENABLE_TRITON_KABSCH = _ENABLE_TRITON_KABSCH
@@ -331,9 +330,6 @@ kabsch_batch = _rigid.kabsch_batch
 _apply_transform = _rigid._apply_transform
 _tm_score_impl = _rigid._tm_score_impl
 _tm_score = _tm_score_impl
-_tm_score_compiled: object = None
-_activate_torch_compile = _rigid._activate_torch_compile
-_deactivate_torch_compile = _rigid._deactivate_torch_compile
 _tm_score_fused = _rigid._tm_score_fused
 _weighted_refine_chunk_size = _rigid._weighted_refine_chunk_size
 _dist2_fused = _rigid._dist2_fused

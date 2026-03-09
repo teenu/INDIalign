@@ -194,7 +194,7 @@ def run_gpu_batch(
         torch.cuda.synchronize(device=device)
     _, per_target = score_parallel(
         solution, submission,
-        usalign_bin="", workers=0, device=device,
+        device=device,
         max_iter=None, use_fragment_search=True,
         max_mem_gb=20.0, dp_iter=0,
     )

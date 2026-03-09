@@ -2,67 +2,11 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
-
 import numpy as np
 import pandas as pd
 import torch
 
 from . import runtime as rt
-
-
-def _exact_rescore_predictions(
-    target_id: str,
-    group_native: pd.DataFrame,
-    group_predicted: pd.DataFrame,
-    pred_ids: list[int],
-    usalign_bin: str,
-    workers: int = 0,
-) -> float:
-    """Exact USalign rescore for a selected subset of submission conformers."""
-    if not pred_ids or not usalign_bin:
-        return 0.0
-
-    from scoring import local_validation_mt as _mt
-
-    has_chain_copy = ("chain" in group_native.columns) and ("copy" in group_native.columns)
-    is_multicopy = has_chain_copy and (group_native["copy"].astype(float).max() > 1)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        native_with_coords: list[int] = []
-        for native_cnt in range(1, rt.MAX_NATIVE_FRAMES + 1):
-            native_pdb = os.path.join(tmpdir, f"native_{target_id}_{native_cnt}.pdb")
-            resolved_native = _mt.write2pdb(group_native, native_cnt, native_pdb)
-            if resolved_native > 0:
-                native_with_coords.append(native_cnt)
-            elif os.path.exists(native_pdb):
-                os.remove(native_pdb)
-
-        if not native_with_coords:
-            return 0.0
-
-        max_workers = workers if workers and workers > 0 else len(pred_ids)
-        max_workers = max(1, min(max_workers, len(pred_ids)))
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futs = [
-                ex.submit(
-                    _mt._score_one_prediction,
-                    pred_cnt,
-                    is_multicopy,
-                    group_predicted,
-                    group_native,
-                    native_with_coords,
-                    tmpdir,
-                    usalign_bin,
-                    target_id,
-                )
-                for pred_cnt in pred_ids
-            ]
-            scores = [f.result() for f in futs]
-
-    return max(scores) if scores else 0.0
 
 
 def _multimer_group_indices(
