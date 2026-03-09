@@ -1,0 +1,17 @@
+# Competition data (large)
+stanford-rna-3d-folding/
+stanford-rna-3d-folding-2/
+submission/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Triton cache
+.triton/
+
+# IDE
+.vscode/
+.idea/
