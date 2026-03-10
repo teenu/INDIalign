@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import torch
 
+from . import cross_index as _cross_index
 from . import dp as _dp
 from . import runtime as rt
+
+_evaluate_local_fragment_dp_seeds = _cross_index._evaluate_local_fragment_dp_seeds
+_evaluate_threading_dp_seeds = _cross_index._evaluate_threading_dp_seeds
 
 
 def _fragment_lengths(max_len: int) -> list[int]:
@@ -125,8 +129,8 @@ def _build_pairwise_topk_seed_masks(
 ) -> torch.Tensor:
     """Build second-pass distance seeds with per-pair top-k budgets."""
     B, N = valid.shape
-    if B == 0:
-        return torch.zeros((0, len(fracs), N), dtype=torch.bool, device=valid.device)
+    if B == 0 or not fracs:
+        return torch.zeros((B, 0, N), dtype=torch.bool, device=valid.device)
 
     valid_counts = valid.sum(dim=1).to(dtype=torch.long)
     min_k = min(3, N)
@@ -565,6 +569,69 @@ def tmscore_search(
         max_iter,
         max_mem_gb,
     )
+    if pred_valid is not None and native_valid is not None:
+        # Strong same-index basins do not need the more expensive cross-index rescue.
+        rescue_mask = cur_score < 0.5
+        if rescue_mask.any():
+            rescue_idx = torch.nonzero(rescue_mask, as_tuple=False).squeeze(1)
+            lf_R, lf_t, lf_score = _evaluate_local_fragment_dp_seeds(
+                pred.index_select(0, rescue_idx),
+                native.index_select(0, rescue_idx),
+                valid.index_select(0, rescue_idx),
+                pred_valid.index_select(0, rescue_idx),
+                native_valid.index_select(0, rescue_idx),
+                d0.index_select(0, rescue_idx),
+                d0_search.index_select(0, rescue_idx),
+                Lnorm.index_select(0, rescue_idx),
+                max_mem_gb,
+            )
+            better = lf_score > cur_score.index_select(0, rescue_idx)
+            if better.any():
+                better_idx = rescue_idx[better]
+                best_R[better_idx] = lf_R[better]
+                best_t[better_idx] = lf_t[better]
+                cur_score[better_idx] = lf_score[better]
+        thread_mask = cur_score < 0.5
+        if thread_mask.any():
+            thread_idx = torch.nonzero(thread_mask, as_tuple=False).squeeze(1)
+            th_R, th_t, th_score = _evaluate_threading_dp_seeds(
+                pred.index_select(0, thread_idx),
+                native.index_select(0, thread_idx),
+                valid.index_select(0, thread_idx),
+                pred_valid.index_select(0, thread_idx),
+                native_valid.index_select(0, thread_idx),
+                d0.index_select(0, thread_idx),
+                d0_search.index_select(0, thread_idx),
+                Lnorm.index_select(0, thread_idx),
+                max_mem_gb,
+            )
+            better = th_score > cur_score.index_select(0, thread_idx)
+            if better.any():
+                better_idx = thread_idx[better]
+                best_R[better_idx] = th_R[better]
+                best_t[better_idx] = th_t[better]
+                cur_score[better_idx] = th_score[better]
+        dense_local_mask = cur_score < 0.3
+        if dense_local_mask.any():
+            dense_idx = torch.nonzero(dense_local_mask, as_tuple=False).squeeze(1)
+            dlf_R, dlf_t, dlf_score = _evaluate_local_fragment_dp_seeds(
+                pred.index_select(0, dense_idx),
+                native.index_select(0, dense_idx),
+                valid.index_select(0, dense_idx),
+                pred_valid.index_select(0, dense_idx),
+                native_valid.index_select(0, dense_idx),
+                d0.index_select(0, dense_idx),
+                d0_search.index_select(0, dense_idx),
+                Lnorm.index_select(0, dense_idx),
+                max_mem_gb,
+                dense=True,
+            )
+            better = dlf_score > cur_score.index_select(0, dense_idx)
+            if better.any():
+                better_idx = dense_idx[better]
+                best_R[better_idx] = dlf_R[better]
+                best_t[better_idx] = dlf_t[better]
+                cur_score[better_idx] = dlf_score[better]
 
     # Two-pass: batch distance-sorted seeds (fracs × mults), chunked to
     # avoid a large coordinate expansion.
@@ -610,7 +677,8 @@ def tmscore_search(
     # DP refinement: iterative NW alignment discovery
     if dp_iter > 0:
         dp_R, dp_t, dp_score = _dp._dp_refine(
-            pred, native, valid, best_R, best_t, d0, score_d8, Lnorm, dp_iter,
+            pred, native, valid, best_R, best_t, d0, d0_search, score_d8, Lnorm, dp_iter,
+            max_mem_gb=max_mem_gb,
             pred_valid=pred_valid, native_valid=native_valid,
         )
         # Identity score with DP-refined superposition
@@ -628,8 +696,8 @@ def tmscore_search(
             id_R = eye3.unsqueeze(0).expand(B, 3, 3).clone()
             id_t = torch.zeros(B, 3, dtype=dtype, device=device)
             id_dp_R, id_dp_t, id_dp_score = _dp._dp_refine(
-                pred, native, valid, id_R, id_t, d0, score_d8, Lnorm,
-                dp_iter, pred_valid=pred_valid, native_valid=native_valid,
+                pred, native, valid, id_R, id_t, d0, d0_search, score_d8, Lnorm,
+                dp_iter, max_mem_gb=max_mem_gb, pred_valid=pred_valid, native_valid=native_valid,
             )
             id_dp_id_score = rt._tm_score_fused(
                 pred, native, valid, id_dp_R, id_dp_t, d0, Lnorm,
@@ -638,8 +706,54 @@ def tmscore_search(
                 final_score,
                 torch.max(id_dp_score, id_dp_id_score),
             )
+            extra_dp_iters = max(0, 5 - dp_iter)
+            if extra_dp_iters > 0:
+                weak_mask = final_score < 0.36
+                if weak_mask.any():
+                    weak_idx = torch.nonzero(weak_mask, as_tuple=False).squeeze(1)
+                    use_seed = cur_score.index_select(0, weak_idx) > dp_score.index_select(0, weak_idx)
+                    extra_R0 = torch.where(
+                        use_seed[:, None, None],
+                        best_R.index_select(0, weak_idx),
+                        dp_R.index_select(0, weak_idx),
+                    )
+                    extra_t0 = torch.where(
+                        use_seed[:, None],
+                        best_t.index_select(0, weak_idx),
+                        dp_t.index_select(0, weak_idx),
+                    )
+                    extra_R, extra_t, extra_score = _dp._dp_refine(
+                        pred.index_select(0, weak_idx),
+                        native.index_select(0, weak_idx),
+                        valid.index_select(0, weak_idx),
+                        extra_R0,
+                        extra_t0,
+                        d0.index_select(0, weak_idx),
+                        d0_search.index_select(0, weak_idx),
+                        score_d8.index_select(0, weak_idx),
+                        Lnorm.index_select(0, weak_idx),
+                        extra_dp_iters,
+                        max_mem_gb=max_mem_gb,
+                        pred_valid=pred_valid.index_select(0, weak_idx),
+                        native_valid=native_valid.index_select(0, weak_idx),
+                    )
+                    extra_id_score = rt._tm_score_fused(
+                        pred.index_select(0, weak_idx),
+                        native.index_select(0, weak_idx),
+                        valid.index_select(0, weak_idx),
+                        extra_R,
+                        extra_t,
+                        d0.index_select(0, weak_idx),
+                        Lnorm.index_select(0, weak_idx),
+                    )
+                    final_score[weak_idx] = torch.max(
+                        final_score.index_select(0, weak_idx),
+                        torch.max(extra_score, extra_id_score),
+                    )
+        final_score = torch.max(final_score, cur_score)
     else:
         final_score = rt._tm_score_fused(pred, native, valid, best_R, best_t, d0, Lnorm)
+        final_score = torch.max(final_score, cur_score)
 
     final_score = torch.where(Lnorm > 2.0, final_score, torch.zeros_like(final_score))
     return final_score

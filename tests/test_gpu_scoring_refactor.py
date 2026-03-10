@@ -208,6 +208,209 @@ def test_tmscore_search_snapshot() -> None:
     assert torch.allclose(score.cpu(), torch.tensor([0.7666330261384652], dtype=torch.float64), atol=1e-12, rtol=0.0)
 
 
+def test_tmscore_search_uses_threading_rescue_for_weak_cross_index_scores() -> None:
+    device = _device()
+    pred = torch.zeros((1, 4, 3), dtype=torch.float64, device=device)
+    native = pred.clone()
+    valid = torch.ones((1, 4), dtype=torch.bool, device=device)
+    Lnorm = torch.full((1,), 4.0, dtype=torch.float64, device=device)
+    d0 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    d0_search = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    score_d8 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    eye = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0)
+    zero_t = torch.zeros((1, 3), dtype=torch.float64, device=device)
+    calls: list[str] = []
+
+    orig_eval_seed_bank = tgs._evaluate_seed_bank
+    orig_local = tgs._evaluate_local_fragment_dp_seeds
+    orig_thread = tgs._evaluate_threading_dp_seeds
+    orig_tm_score = tgr._tm_score_fused
+
+    def fake_eval_seed_bank(*args, **kwargs):
+        return eye.clone(), zero_t.clone(), torch.tensor([0.1], dtype=torch.float64, device=device)
+
+    def fake_local(*args, **kwargs):
+        calls.append("local")
+        return eye.clone(), zero_t.clone(), torch.tensor([0.2], dtype=torch.float64, device=device)
+
+    def fake_thread(*args, **kwargs):
+        calls.append("thread")
+        return eye.clone(), zero_t.clone(), torch.tensor([0.3], dtype=torch.float64, device=device)
+
+    def fake_tm_score(*args, **kwargs):
+        return torch.zeros((1,), dtype=torch.float64, device=device)
+
+    try:
+        tgs._evaluate_seed_bank = fake_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = fake_local
+        tgs._evaluate_threading_dp_seeds = fake_thread
+        tgr._tm_score_fused = fake_tm_score
+
+        score = tg.tmscore_search(
+            pred,
+            native,
+            valid,
+            d0,
+            d0_search,
+            score_d8,
+            Lnorm,
+            max_iter=1,
+            use_fragment_search=True,
+            max_mem_gb=1.0,
+            dp_iter=0,
+            pred_valid=valid,
+            native_valid=valid,
+        )
+    finally:
+        tgs._evaluate_seed_bank = orig_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = orig_local
+        tgs._evaluate_threading_dp_seeds = orig_thread
+        tgr._tm_score_fused = orig_tm_score
+
+    assert calls == ["local", "thread"]
+    assert torch.allclose(score.cpu(), torch.tensor([0.3], dtype=torch.float64), atol=1e-12, rtol=0.0)
+
+
+def test_tmscore_search_uses_dense_local_fallback_for_very_weak_scores() -> None:
+    device = _device()
+    pred = torch.zeros((1, 4, 3), dtype=torch.float64, device=device)
+    native = pred.clone()
+    valid = torch.ones((1, 4), dtype=torch.bool, device=device)
+    Lnorm = torch.full((1,), 4.0, dtype=torch.float64, device=device)
+    d0 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    d0_search = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    score_d8 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    eye = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0)
+    zero_t = torch.zeros((1, 3), dtype=torch.float64, device=device)
+    calls: list[str] = []
+
+    orig_eval_seed_bank = tgs._evaluate_seed_bank
+    orig_local = tgs._evaluate_local_fragment_dp_seeds
+    orig_thread = tgs._evaluate_threading_dp_seeds
+    orig_tm_score = tgr._tm_score_fused
+
+    def fake_eval_seed_bank(*args, **kwargs):
+        return eye.clone(), zero_t.clone(), torch.tensor([0.1], dtype=torch.float64, device=device)
+
+    def fake_local(*args, dense: bool = False, **kwargs):
+        calls.append("dense_local" if dense else "local")
+        value = 0.35 if dense else 0.2
+        return eye.clone(), zero_t.clone(), torch.tensor([value], dtype=torch.float64, device=device)
+
+    def fake_thread(*args, **kwargs):
+        calls.append("thread")
+        return eye.clone(), zero_t.clone(), torch.tensor([0.25], dtype=torch.float64, device=device)
+
+    def fake_tm_score(*args, **kwargs):
+        return torch.zeros((1,), dtype=torch.float64, device=device)
+
+    try:
+        tgs._evaluate_seed_bank = fake_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = fake_local
+        tgs._evaluate_threading_dp_seeds = fake_thread
+        tgr._tm_score_fused = fake_tm_score
+
+        score = tg.tmscore_search(
+            pred,
+            native,
+            valid,
+            d0,
+            d0_search,
+            score_d8,
+            Lnorm,
+            max_iter=1,
+            use_fragment_search=True,
+            max_mem_gb=1.0,
+            dp_iter=0,
+            pred_valid=valid,
+            native_valid=valid,
+        )
+    finally:
+        tgs._evaluate_seed_bank = orig_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = orig_local
+        tgs._evaluate_threading_dp_seeds = orig_thread
+        tgr._tm_score_fused = orig_tm_score
+
+    assert calls == ["local", "thread", "dense_local"]
+    assert torch.allclose(score.cpu(), torch.tensor([0.35], dtype=torch.float64), atol=1e-12, rtol=0.0)
+
+
+def test_tmscore_search_uses_extra_dp_rescue_for_weak_cross_index_scores() -> None:
+    device = _device()
+    pred = torch.zeros((1, 4, 3), dtype=torch.float64, device=device)
+    native = pred.clone()
+    valid = torch.ones((1, 4), dtype=torch.bool, device=device)
+    Lnorm = torch.full((1,), 4.0, dtype=torch.float64, device=device)
+    d0 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    d0_search = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    score_d8 = torch.full((1,), 1.0, dtype=torch.float64, device=device)
+    eye = torch.eye(3, dtype=torch.float64, device=device).unsqueeze(0)
+    zero_t = torch.zeros((1, 3), dtype=torch.float64, device=device)
+    dp_calls: list[int] = []
+
+    orig_eval_seed_bank = tgs._evaluate_seed_bank
+    orig_local = tgs._evaluate_local_fragment_dp_seeds
+    orig_thread = tgs._evaluate_threading_dp_seeds
+    orig_tm_score = tgr._tm_score_fused
+    orig_dp_refine = tgs._dp._dp_refine
+
+    def fake_eval_seed_bank(*args, **kwargs):
+        return eye.clone(), zero_t.clone(), torch.tensor([0.2], dtype=torch.float64, device=device)
+
+    def fake_local(*args, **kwargs):
+        return eye.clone(), zero_t.clone(), torch.tensor([0.2], dtype=torch.float64, device=device)
+
+    def fake_thread(*args, **kwargs):
+        return eye.clone(), zero_t.clone(), torch.tensor([0.2], dtype=torch.float64, device=device)
+
+    def fake_tm_score(*args, **kwargs):
+        return torch.zeros((1,), dtype=torch.float64, device=device)
+
+    def fake_dp_refine(*args, max_iter: int = 0, **kwargs):
+        if len(args) >= 10:
+            max_iter = int(args[9])
+        dp_calls.append(max_iter)
+        if max_iter == 4:
+            score = 0.37
+        elif len(dp_calls) == 1:
+            score = 0.34
+        else:
+            score = 0.1
+        return eye.clone(), zero_t.clone(), torch.tensor([score], dtype=torch.float64, device=device)
+
+    try:
+        tgs._evaluate_seed_bank = fake_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = fake_local
+        tgs._evaluate_threading_dp_seeds = fake_thread
+        tgr._tm_score_fused = fake_tm_score
+        tgs._dp._dp_refine = fake_dp_refine
+
+        score = tg.tmscore_search(
+            pred,
+            native,
+            valid,
+            d0,
+            d0_search,
+            score_d8,
+            Lnorm,
+            max_iter=1,
+            use_fragment_search=True,
+            max_mem_gb=1.0,
+            dp_iter=1,
+            pred_valid=valid,
+            native_valid=valid,
+        )
+    finally:
+        tgs._evaluate_seed_bank = orig_eval_seed_bank
+        tgs._evaluate_local_fragment_dp_seeds = orig_local
+        tgs._evaluate_threading_dp_seeds = orig_thread
+        tgr._tm_score_fused = orig_tm_score
+        tgs._dp._dp_refine = orig_dp_refine
+
+    assert dp_calls == [1, 1, 4]
+    assert torch.allclose(score.cpu(), torch.tensor([0.37], dtype=torch.float64), atol=1e-12, rtol=0.0)
+
+
 def test_score_target_handles_multimer_permutation() -> None:
     _configure_strict_float64()
 

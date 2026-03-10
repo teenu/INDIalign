@@ -119,6 +119,58 @@ def _nw_traceback(
     return align_p, align_n, n_aligned
 
 
+def _alignment_detailed_search(
+    pred: torch.Tensor,
+    native: torch.Tensor,
+    align_p: torch.Tensor,
+    align_n: torch.Tensor,
+    pair_mask: torch.Tensor,
+    d0: torch.Tensor,
+    d0_search: torch.Tensor,
+    score_d8: torch.Tensor | None,
+    Lnorm: torch.Tensor,
+    max_mem_gb: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Refine an NW alignment by fragment search over the aligned residue list."""
+    B, max_pairs = align_p.shape
+    device = pred.device
+    dtype = pred.dtype
+    eye3 = torch.eye(3, dtype=dtype, device=device)
+    if B == 0:
+        return (
+            eye3.unsqueeze(0).expand(0, 3, 3).clone(),
+            torch.zeros((0, 3), dtype=dtype, device=device),
+            torch.zeros((0,), dtype=dtype, device=device),
+        )
+
+    b_idx = torch.arange(B, device=device).unsqueeze(1).expand(B, max_pairs)
+    safe_p = align_p.clamp(min=0)
+    safe_n = align_n.clamp(min=0)
+    pred_pairs = pred[b_idx, safe_p]
+    native_pairs = native[b_idx, safe_n]
+    seed_bank = rt._build_pairwise_seed_masks(pair_mask, use_fragment_search=True)
+    if seed_bank.shape[1] == 0:
+        return (
+            eye3.unsqueeze(0).expand(B, 3, 3).clone(),
+            torch.zeros((B, 3), dtype=dtype, device=device),
+            torch.full((B,), -torch.inf, dtype=dtype, device=device),
+        )
+
+    d0_candidates = rt._d0_search_candidates(d0_search)
+    return rt._evaluate_seed_bank(
+        pred_pairs,
+        native_pairs,
+        pair_mask,
+        seed_bank,
+        d0_candidates,
+        d0,
+        score_d8,
+        Lnorm,
+        rt._MAX_ITER,
+        max_mem_gb,
+    )
+
+
 def _dp_refine_chunk(
     pred: torch.Tensor,
     native: torch.Tensor,
@@ -126,9 +178,11 @@ def _dp_refine_chunk(
     R: torch.Tensor,
     t: torch.Tensor,
     d0: torch.Tensor,
-    score_d8: torch.Tensor,
+    d0_search: torch.Tensor | None,
+    score_d8: torch.Tensor | None,
     Lnorm: torch.Tensor,
     max_iter: int = 5,
+    max_mem_gb: float = 20.0,
     pred_valid: torch.Tensor | None = None,
     native_valid: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -155,17 +209,36 @@ def _dp_refine_chunk(
         N_aligned = native[b_idx, safe_n]
         has_enough = pair_mask.sum(dim=1) >= 3
         R_new, t_new = rt.kabsch_batch(P_aligned, N_aligned, pair_mask)
-        cur_R = torch.where(has_enough[:, None, None], R_new, cur_R)
-        cur_t = torch.where(has_enough[:, None], t_new, cur_t)
-        moved_new = rt._apply_transform(pred, cur_R, cur_t)
+        moved_new = rt._apply_transform(pred, R_new, t_new)
         d2 = ((moved_new[b_idx, safe_p] - N_aligned) ** 2).sum(dim=2)
         term = 1.0 / (1.0 + d2 / torch.clamp(d0[:, None] ** 2, min=1e-12))
         term = term * pair_mask.to(dtype=term.dtype)
-        score = term.sum(dim=1) / torch.clamp(Lnorm, min=1.0)
-        better = score > best_score
+        iter_score = term.sum(dim=1) / torch.clamp(Lnorm, min=1.0)
+        iter_R = R_new
+        iter_t = t_new
+        if d0_search is not None:
+            det_R, det_t, det_score = _alignment_detailed_search(
+                pred,
+                native,
+                align_p,
+                align_n,
+                pair_mask,
+                d0,
+                d0_search,
+                score_d8,
+                Lnorm,
+                max_mem_gb,
+            )
+            use_det = det_score > iter_score
+            iter_R = torch.where(use_det[:, None, None], det_R, iter_R)
+            iter_t = torch.where(use_det[:, None], det_t, iter_t)
+            iter_score = torch.where(use_det, det_score, iter_score)
+        cur_R = torch.where(has_enough[:, None, None], iter_R, cur_R)
+        cur_t = torch.where(has_enough[:, None], iter_t, cur_t)
+        better = has_enough & (iter_score > best_score)
         best_R[better] = cur_R[better]
         best_t[better] = cur_t[better]
-        best_score[better] = score[better]
+        best_score[better] = iter_score[better]
     return best_R, best_t, best_score
 
 
@@ -176,9 +249,11 @@ def _dp_refine(
     R: torch.Tensor,
     t: torch.Tensor,
     d0: torch.Tensor,
-    score_d8: torch.Tensor,
+    d0_search: torch.Tensor | None,
+    score_d8: torch.Tensor | None,
     Lnorm: torch.Tensor,
     max_iter: int = 5,
+    max_mem_gb: float = 20.0,
     pred_valid: torch.Tensor | None = None,
     native_valid: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -199,8 +274,8 @@ def _dp_refine(
     chunk_b = max(1, budget // bytes_per_elem)
     if chunk_b >= B:
         return _dp_refine_chunk(
-            pred, native, valid, R, t, d0, score_d8, Lnorm,
-            max_iter, pred_valid, native_valid,
+            pred, native, valid, R, t, d0, d0_search, score_d8, Lnorm,
+            max_iter, max_mem_gb, pred_valid, native_valid,
         )
     # Chunked path
     best_R = R.clone()
@@ -210,10 +285,12 @@ def _dp_refine(
         e = min(s + chunk_b, B)
         pv_c = pred_valid[s:e] if pred_valid is not None else None
         nv_c = native_valid[s:e] if native_valid is not None else None
+        d0s_c = d0_search[s:e] if d0_search is not None else None
+        sd8_c = score_d8[s:e] if score_d8 is not None else None
         cR, ct, cs = _dp_refine_chunk(
             pred[s:e], native[s:e], valid[s:e],
-            R[s:e], t[s:e], d0[s:e], score_d8[s:e], Lnorm[s:e],
-            max_iter, pv_c, nv_c,
+            R[s:e], t[s:e], d0[s:e], d0s_c, sd8_c, Lnorm[s:e],
+            max_iter, max_mem_gb, pv_c, nv_c,
         )
         best_R[s:e] = cR
         best_t[s:e] = ct
