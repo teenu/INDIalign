@@ -135,47 +135,32 @@ def _kabsch_finalize_from_cov(
     return R, t
 
 
-def _kabsch_batch_torch(P: torch.Tensor, Q: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    dtype = P.dtype
-    m = mask.to(dtype=dtype)
-    w = m.unsqueeze(-1)
-    count = m.sum(dim=1, keepdim=True)
-    safe_count = torch.clamp(count, min=1.0)
-
-    cP = (P * w).sum(dim=1) / safe_count
-    cQ = (Q * w).sum(dim=1) / safe_count
-
+def _kabsch_cov(
+    P: torch.Tensor, Q: torch.Tensor, w: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Weighted covariance matrix and centroids for Kabsch alignment."""
+    w3 = w.unsqueeze(-1)
+    weight_sum = torch.clamp(w.sum(dim=1, keepdim=True), min=1e-12)
+    cP = (P * w3).sum(dim=1) / weight_sum
+    cQ = (Q * w3).sum(dim=1) / weight_sum
     Pc = P - cP.unsqueeze(1)
     Qc = Q - cQ.unsqueeze(1)
-    # Disable TF32 for covariance matmul: TF32 truncates mantissa to 10 bits
-    # which can degrade rotation quality for near-planar or small point sets.
-    prev_tf32 = torch.backends.cuda.matmul.allow_tf32
-    torch.backends.cuda.matmul.allow_tf32 = False
-    H = torch.bmm((Pc * w).transpose(1, 2), Qc)
-    torch.backends.cuda.matmul.allow_tf32 = prev_tf32
-    return _kabsch_finalize_from_cov(H, cP, cQ, count)
+    H = torch.bmm((Pc * w3).transpose(1, 2), Qc)
+    return H, cP, cQ
+
+
+def _kabsch_batch_torch(P: torch.Tensor, Q: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    w = mask.to(dtype=P.dtype)
+    H, cP, cQ = _kabsch_cov(P, Q, w)
+    return _kabsch_finalize_from_cov(H, cP, cQ, w.sum(dim=1, keepdim=True))
 
 
 def _kabsch_batch_weighted(
-    P: torch.Tensor,
-    Q: torch.Tensor,
-    weights: torch.Tensor,
+    P: torch.Tensor, Q: torch.Tensor, weights: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    dtype = P.dtype
-    w = weights.to(dtype=dtype)
-    w3 = w.unsqueeze(-1)
-    support = (w > 1e-8).sum(dim=1, keepdim=True).to(dtype=dtype)
-    weight_sum = torch.clamp(w.sum(dim=1, keepdim=True), min=1e-12)
-
-    cP = (P * w3).sum(dim=1) / weight_sum
-    cQ = (Q * w3).sum(dim=1) / weight_sum
-
-    Pc = P - cP.unsqueeze(1)
-    Qc = Q - cQ.unsqueeze(1)
-    prev_tf32 = torch.backends.cuda.matmul.allow_tf32
-    torch.backends.cuda.matmul.allow_tf32 = False
-    H = torch.bmm((Pc * w3).transpose(1, 2), Qc)
-    torch.backends.cuda.matmul.allow_tf32 = prev_tf32
+    w = weights.to(dtype=P.dtype)
+    H, cP, cQ = _kabsch_cov(P, Q, w)
+    support = (w > 1e-8).sum(dim=1, keepdim=True).to(dtype=P.dtype)
     return _kabsch_finalize_from_cov(H, cP, cQ, support)
 
 

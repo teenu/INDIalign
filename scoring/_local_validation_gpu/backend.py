@@ -19,39 +19,36 @@ def _configure_tmscore_backend(
     if mode not in {"strict", "hybrid", "fast", "ultrafast"}:
         raise ValueError(f"Unknown backend mode: {mode!r}")
 
+    _MODE_PRESETS = {
+        "strict": {
+            "_ENABLE_TRITON_REFINE": False, "_ENABLE_TRITON_KABSCH": False,
+            "_ENABLE_TRITON_SCORE": False,
+        },
+        "hybrid": {
+            "_ENABLE_TRITON_REFINE": True, "_ENABLE_TRITON_KABSCH": False,
+            "_ENABLE_TRITON_SCORE": True, "_TRITON_REFINE_PARITY_GUARD": True,
+            "_TRITON_REFINE_PARITY_ABS_TOL": 0.45,
+        },
+        "fast": {
+            "_ENABLE_TRITON_REFINE": True, "_ENABLE_TRITON_KABSCH": True,
+            "_ENABLE_TRITON_SCORE": True, "_TRITON_REFINE_PARITY_GUARD": False,
+        },
+        "ultrafast": {
+            "_ENABLE_TRITON_REFINE": True, "_ENABLE_TRITON_KABSCH": True,
+            "_ENABLE_TRITON_SCORE": True, "_TRITON_REFINE_PARITY_GUARD": False,
+            "_D0_SEARCH_MULTS": (1.0, 0.5), "_DIST_FRACS": (0.5,),
+            "_MAX_FRAG_STARTS": 20, "_MAX_ITER": 8,
+        },
+    }
+
     # Reset all mutable backend globals so mode switching is process-safe.
     if hasattr(_tg, "reset_backend_runtime_state"):
         _tg.reset_backend_runtime_state()
 
-    # Presets are tuned for validation reproducibility first; users can then
-    # opt into more aggressive Triton paths with explicit overrides.
-    if mode == "strict":
-        _tg._ENABLE_TRITON_REFINE = False
-        _tg._ENABLE_TRITON_KABSCH = False
-        _tg._ENABLE_TRITON_SCORE = False
-    elif mode == "hybrid":
-        _tg._ENABLE_TRITON_REFINE = True
-        _tg._ENABLE_TRITON_KABSCH = False
-        _tg._ENABLE_TRITON_SCORE = True
-        if hasattr(_tg, "_TRITON_REFINE_PARITY_GUARD"):
-            _tg._TRITON_REFINE_PARITY_GUARD = True
-        if hasattr(_tg, "_TRITON_REFINE_PARITY_ABS_TOL"):
-            _tg._TRITON_REFINE_PARITY_ABS_TOL = 0.45
-    elif mode == "ultrafast":
-        _tg._ENABLE_TRITON_REFINE = True
-        _tg._ENABLE_TRITON_KABSCH = True
-        _tg._ENABLE_TRITON_SCORE = True
-        _tg._TRITON_REFINE_PARITY_GUARD = False
-        _tg._D0_SEARCH_MULTS = (1.0, 0.5)
-        _tg._DIST_FRACS = (0.5,)
-        _tg._MAX_FRAG_STARTS = 20
-        _tg._MAX_ITER = 8
+    for k, v in _MODE_PRESETS[mode].items():
+        setattr(_tg, k, v)
+    if mode == "ultrafast":
         _tg._MULTS_CACHE.clear()
-    else:  # fast
-        _tg._ENABLE_TRITON_REFINE = True
-        _tg._ENABLE_TRITON_KABSCH = True
-        _tg._ENABLE_TRITON_SCORE = True
-        _tg._TRITON_REFINE_PARITY_GUARD = False
 
     if triton_refine:
         _tg._ENABLE_TRITON_REFINE = True
