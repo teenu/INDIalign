@@ -114,6 +114,19 @@ def _can_use_triton_refine(pred: torch.Tensor, native: torch.Tensor, valid: torc
     )
 
 
+def _can_use_triton_nw(score_mat: torch.Tensor) -> bool:
+    """Check if the Triton NW DP kernel can be used."""
+    _, Np, Nn = score_mat.shape
+    return bool(
+        rt._HAS_TRITON
+        and rt._ENABLE_TRITON_NW
+        and score_mat.is_cuda
+        and score_mat.dtype == torch.float32
+        and score_mat.is_contiguous()
+        and max(Np, Nn) <= 1024
+    )
+
+
 if rt._HAS_TRITON:
     @triton.jit
     def _select_mask_kernel(
@@ -528,6 +541,54 @@ if rt._HAS_TRITON:
         d2 = tl.where(v != 0, d2, 1e12)
         tl.store(OUT_ptr + b * stride_ob + offs * stride_on, d2, mask=in_bounds)
 
+    @triton.jit
+    def _nw_dp_kernel(
+        SCORE_ptr, H_ptr, TRACE_ptr,
+        B, Np, Nn,
+        stride_sb, stride_sp, stride_sn,
+        stride_hb, stride_hp, stride_hn,
+        stride_tb, stride_tp, stride_tn,
+        BLOCK_K: tl.constexpr,
+    ):
+        """Anti-diagonal wavefront NW DP.  One program per batch element."""
+        b = tl.program_id(0)
+        if b >= B:
+            return
+        offs = tl.arange(0, BLOCK_K)
+        for d in tl.range(2, Np + Nn + 2):
+            ii = 1 + offs
+            jj = d - ii
+            in_bounds = (ii <= Np) & (jj >= 1) & (jj <= Nn)
+            s = tl.load(
+                SCORE_ptr + b * stride_sb + (ii - 1) * stride_sp + (jj - 1) * stride_sn,
+                mask=in_bounds, other=0.0,
+            )
+            h_diag = tl.load(
+                H_ptr + b * stride_hb + (ii - 1) * stride_hp + (jj - 1) * stride_hn,
+                mask=in_bounds, other=0.0,
+            )
+            h_up = tl.load(
+                H_ptr + b * stride_hb + (ii - 1) * stride_hp + jj * stride_hn,
+                mask=in_bounds, other=0.0,
+            )
+            h_left = tl.load(
+                H_ptr + b * stride_hb + ii * stride_hp + (jj - 1) * stride_hn,
+                mask=in_bounds, other=0.0,
+            )
+            diag_val = h_diag + s
+            best_val = tl.maximum(tl.maximum(diag_val, h_up), h_left)
+            is_diag = (best_val == diag_val)
+            is_up = (~is_diag) & (best_val == h_up)
+            dir_val = tl.where(is_diag, 0, tl.where(is_up, 1, 2)).to(tl.int8)
+            tl.store(
+                H_ptr + b * stride_hb + ii * stride_hp + jj * stride_hn,
+                best_val, mask=in_bounds,
+            )
+            tl.store(
+                TRACE_ptr + b * stride_tb + ii * stride_tp + jj * stride_tn,
+                dir_val, mask=in_bounds,
+            )
+
 def _kabsch_fused_triton(
     P: torch.Tensor, Q: torch.Tensor, mask: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -671,3 +732,26 @@ def _dist2_fused_triton(
         num_stages=num_stages,
     )
     return d2
+
+
+def _nw_dp_triton(score_mat: torch.Tensor) -> torch.Tensor:
+    """Triton-accelerated NW DP. Returns trace matrix (B, Np+1, Nn+1) int8."""
+    B, Np, Nn = score_mat.shape
+    device = score_mat.device
+    dtype = score_mat.dtype
+    H = torch.zeros(B, Np + 1, Nn + 1, dtype=dtype, device=device)
+    trace = torch.zeros(B, Np + 1, Nn + 1, dtype=torch.int8, device=device)
+    block_k = 32
+    while block_k < max(Np, Nn):
+        block_k *= 2
+    _nw_dp_kernel[(B,)](
+        score_mat, H, trace,
+        B, Np, Nn,
+        *score_mat.stride(),
+        *H.stride(),
+        *trace.stride(),
+        BLOCK_K=block_k,
+        num_warps=1,
+        num_stages=1,
+    )
+    return trace

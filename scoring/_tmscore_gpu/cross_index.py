@@ -136,7 +136,9 @@ def _build_pairwise_thread_starts(
             native_starts: list[int] = []
             overlap_lens: list[int] = []
             if min(pred_len, native_len) >= 3:
-                for offset in range(-(native_len - 3), pred_len - 2):
+                min_len = min(pred_len, native_len)
+                step = max(1, min_len // 50)
+                for offset in range(-(native_len - 3), pred_len - 2, step):
                     pred_start = max(offset, 0)
                     native_start = max(-offset, 0)
                     overlap = min(pred_len - pred_start, native_len - native_start)
@@ -246,6 +248,7 @@ def _evaluate_local_fragment_dp_seeds(
             max_mem_gb=max_mem_gb,
             pred_valid=pred_valid_sel,
             native_valid=native_valid_sel,
+            d0_search_lite=True,
         )
 
         pair_ids = pair_idx.tolist()
@@ -354,6 +357,7 @@ def _evaluate_threading_dp_seeds(
             max_mem_gb=max_mem_gb,
             pred_valid=pred_valid_sel,
             native_valid=native_valid_sel,
+            d0_search_lite=True,
         )
         use_dp = dp_score > seed_score
         cand_R = torch.where(use_dp[:, None, None], dp_R, seed_R)

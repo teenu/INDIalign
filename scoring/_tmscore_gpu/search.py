@@ -56,7 +56,7 @@ def _build_seed_windows(
     if not use_fragment_search:
         return global_win
 
-    ms = rt._MAX_FRAG_STARTS if rt._MAX_FRAG_STARTS is not None else (120 if max_lali <= 500 else 50)
+    ms = rt._MAX_FRAG_STARTS if rt._MAX_FRAG_STARTS is not None else 50
     starts_list: list[int] = []
     frags_list: list[int] = []
     for frag in _fragment_lengths(max_lali):
@@ -698,6 +698,7 @@ def tmscore_search(
             id_dp_R, id_dp_t, id_dp_score = _dp._dp_refine(
                 pred, native, valid, id_R, id_t, d0, d0_search, score_d8, Lnorm,
                 dp_iter, max_mem_gb=max_mem_gb, pred_valid=pred_valid, native_valid=native_valid,
+                d0_search_lite=True,
             )
             id_dp_id_score = rt._tm_score_fused(
                 pred, native, valid, id_dp_R, id_dp_t, d0, Lnorm,
@@ -736,6 +737,7 @@ def tmscore_search(
                         max_mem_gb=max_mem_gb,
                         pred_valid=pred_valid.index_select(0, weak_idx),
                         native_valid=native_valid.index_select(0, weak_idx),
+                        d0_search_lite=True,
                     )
                     extra_id_score = rt._tm_score_fused(
                         pred.index_select(0, weak_idx),

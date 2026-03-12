@@ -34,13 +34,14 @@ _DEFAULTS = {
     '_TM_WEIGHTED_REFINE_ITERS': 0,
     '_TM_WEIGHTED_REFINE_TOPK': 0,
     '_TM_WEIGHTED_REFINE_SCORE_MARGIN': 0.0,
-    '_DIST_FRACS': (0.25, 0.5, 0.75),
+    '_DIST_FRACS': (0.5,),
     '_MAX_FRAG_STARTS': None,
     '_MAX_ITER': 20,
     '_SEARCH_SELECTION_USES_SCORE_D8': True,
     '_ENABLE_TRITON_KABSCH': os.environ.get("BAMBOO_TRITON_KABSCH", "0") != "0",
     '_ENABLE_TRITON_REFINE': os.environ.get("BAMBOO_TRITON_REFINE", "0") != "0",
     '_ENABLE_TRITON_SCORE': os.environ.get("BAMBOO_TRITON_SCORE", "0") != "0",
+    '_ENABLE_TRITON_NW': os.environ.get("BAMBOO_TRITON_NW", "1") != "0",
     '_TRITON_REFINE_PARITY_GUARD': os.environ.get("BAMBOO_TRITON_REFINE_PARITY_GUARD", "1") != "0",
     '_TRITON_REFINE_PARITY_ABS_TOL': float(os.environ.get("BAMBOO_TRITON_REFINE_PARITY_ABS_TOL", "5e-3")),
     '_TRITON_REFINE_PARITY_REL_TOL': float(os.environ.get("BAMBOO_TRITON_REFINE_PARITY_REL_TOL", "1e-5")),
@@ -48,7 +49,7 @@ _DEFAULTS = {
 for _k, _v in _DEFAULTS.items():
     globals()[_k] = _v
 
-_PAIRSEED_KABSCH_BATCH_CAP: int = 8192
+_PAIRSEED_KABSCH_BATCH_CAP: int = 16384
 _MULTS_CACHE: dict[tuple[str, int, torch.dtype], torch.Tensor] = {}
 _PAIRSEED_BYTES_PER_RES_BOOL = 8
 _EIGH_CHUNK = 30000
@@ -281,6 +282,8 @@ _can_use_triton_score = _triton_ops._can_use_triton_score
 _triton_score_launch_config = _triton_ops._triton_score_launch_config
 _tm_score_fused_triton = _triton_ops._tm_score_fused_triton
 _dist2_fused_triton = _triton_ops._dist2_fused_triton
+_can_use_triton_nw = _triton_ops._can_use_triton_nw
+_nw_dp_triton = _triton_ops._nw_dp_triton
 
 _eigh_largest_eigvec_4x4 = _rigid._eigh_largest_eigvec_4x4
 _kabsch_finalize_from_cov = _rigid._kabsch_finalize_from_cov

@@ -32,6 +32,8 @@ def _nw_dp(score_mat: torch.Tensor) -> torch.Tensor:
 
     Returns trace matrix (B, Np+1, Nn+1) int8: 0=diag, 1=up, 2=left.
     """
+    if rt._can_use_triton_nw(score_mat):
+        return rt._nw_dp_triton(score_mat)
     B, Np, Nn = score_mat.shape
     device = score_mat.device
     dtype = score_mat.dtype
@@ -130,6 +132,7 @@ def _alignment_detailed_search(
     score_d8: torch.Tensor | None,
     Lnorm: torch.Tensor,
     max_mem_gb: float,
+    use_fragment_search: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Refine an NW alignment by fragment search over the aligned residue list."""
     B, max_pairs = align_p.shape
@@ -148,7 +151,7 @@ def _alignment_detailed_search(
     safe_n = align_n.clamp(min=0)
     pred_pairs = pred[b_idx, safe_p]
     native_pairs = native[b_idx, safe_n]
-    seed_bank = rt._build_pairwise_seed_masks(pair_mask, use_fragment_search=True)
+    seed_bank = rt._build_pairwise_seed_masks(pair_mask, use_fragment_search=use_fragment_search)
     if seed_bank.shape[1] == 0:
         return (
             eye3.unsqueeze(0).expand(B, 3, 3).clone(),
@@ -157,6 +160,7 @@ def _alignment_detailed_search(
         )
 
     d0_candidates = rt._d0_search_candidates(d0_search)
+    max_iter = rt._MAX_ITER if use_fragment_search else min(rt._MAX_ITER, 8)
     return rt._evaluate_seed_bank(
         pred_pairs,
         native_pairs,
@@ -166,7 +170,7 @@ def _alignment_detailed_search(
         d0,
         score_d8,
         Lnorm,
-        rt._MAX_ITER,
+        max_iter,
         max_mem_gb,
     )
 
@@ -185,6 +189,7 @@ def _dp_refine_chunk(
     max_mem_gb: float = 20.0,
     pred_valid: torch.Tensor | None = None,
     native_valid: torch.Tensor | None = None,
+    d0_search_lite: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Single-chunk DP refinement (no memory chunking)."""
     pv = pred_valid if pred_valid is not None else valid
@@ -228,6 +233,7 @@ def _dp_refine_chunk(
                 score_d8,
                 Lnorm,
                 max_mem_gb,
+                use_fragment_search=not d0_search_lite,
             )
             use_det = det_score > iter_score
             iter_R = torch.where(use_det[:, None, None], det_R, iter_R)
@@ -256,6 +262,7 @@ def _dp_refine(
     max_mem_gb: float = 20.0,
     pred_valid: torch.Tensor | None = None,
     native_valid: torch.Tensor | None = None,
+    d0_search_lite: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Iterative DP-superposition refinement (TM-align core loop).
 
@@ -275,7 +282,7 @@ def _dp_refine(
     if chunk_b >= B:
         return _dp_refine_chunk(
             pred, native, valid, R, t, d0, d0_search, score_d8, Lnorm,
-            max_iter, max_mem_gb, pred_valid, native_valid,
+            max_iter, max_mem_gb, pred_valid, native_valid, d0_search_lite,
         )
     # Chunked path
     best_R = R.clone()
@@ -290,7 +297,7 @@ def _dp_refine(
         cR, ct, cs = _dp_refine_chunk(
             pred[s:e], native[s:e], valid[s:e],
             R[s:e], t[s:e], d0[s:e], d0s_c, sd8_c, Lnorm[s:e],
-            max_iter, max_mem_gb, pv_c, nv_c,
+            max_iter, max_mem_gb, pv_c, nv_c, d0_search_lite,
         )
         best_R[s:e] = cR
         best_t[s:e] = ct
