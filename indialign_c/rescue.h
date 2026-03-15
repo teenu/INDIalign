@@ -54,8 +54,11 @@ inline SeedResult evaluate_local_fragment_dp(
     double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,72);
     best.t[0]=best.t[1]=best.t[2]=0;
 
+    // Map valid-count indices to original array indices
+    int pv_map[4096], nv_map[4096];
     int plen = 0, nlen = 0;
-    for (int i = 0; i < N; i++) { plen += pv[i]; nlen += nv[i]; }
+    for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
+    for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
     auto flens = local_frag_lengths(plen, nlen, dense);
     if (flens.empty()) return best;
     int jp = local_jump(plen, dense), jn = local_jump(nlen, dense);
@@ -84,8 +87,8 @@ inline SeedResult evaluate_local_fragment_dp(
             std::vector<double> Pf(flen*3), Qf(flen*3);
             std::vector<uint8_t> fm(flen, 1);
             for (int i = 0; i < flen; i++) {
-                std::memcpy(&Pf[i*3], &pred[(ps+i)*3], 24);
-                std::memcpy(&Qf[i*3], &native[(ns+i)*3], 24);
+                std::memcpy(&Pf[i*3], &pred[pv_map[ps+i]*3], 24);
+                std::memcpy(&Qf[i*3], &native[nv_map[ns+i]*3], 24);
             }
             double sR[9], st[3];
             kabsch(Pf.data(), Qf.data(), fm.data(), flen, sR, st);
@@ -113,8 +116,11 @@ inline SeedResult evaluate_threading_dp(
     double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,72);
     best.t[0]=best.t[1]=best.t[2]=0;
 
+    // Map valid-count indices to original array indices
+    int pv_map[4096], nv_map[4096];
     int plen = 0, nlen = 0;
-    for (int i = 0; i < N; i++) { plen += pv[i]; nlen += nv[i]; }
+    for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
+    for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
     if (std::min(plen, nlen) < 3) return best;
     int step = std::max(1, std::min(plen, nlen) / 50);
 
@@ -139,7 +145,10 @@ inline SeedResult evaluate_threading_dp(
             if (overlap < 3) continue;
 
             int ap[4096], an[4096];
-            for (int i = 0; i < overlap; i++) { ap[i] = ps+i; an[i] = ns+i; }
+            for (int i = 0; i < overlap; i++) {
+                ap[i] = pv_map[ps+i];
+                an[i] = nv_map[ns+i];
+            }
 
             auto det = alignment_detailed_search(
                 pred, native, ap, an, overlap,

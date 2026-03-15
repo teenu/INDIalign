@@ -73,7 +73,9 @@ inline SeedResult dp_refine_chunk(
     std::vector<double> moved(N*3), smat(plen * nlen), H_nw;
     std::vector<int8_t> trace_nw;
     int ap[4096], an[4096];
-    double d0sq_s = std::max(d0*d0, 1e-12), sd8sq = score_d8*score_d8;
+    double d0_dp = std::max(d0, 1.0);
+    double d0sq_dp = std::max(d0_dp*d0_dp, 1e-12), sd8sq = score_d8*score_d8;
+    double d0sq_s = std::max(d0*d0, 1e-12);
 
     static constexpr double gap_opens[] = {-0.6, 0.0};
     for (int g = 0; g < 2; g++) {
@@ -91,7 +93,7 @@ inline SeedResult dp_refine_chunk(
                     double dz = moved[i*3+2]-native[j*3+2];
                     double d2 = dx*dx+dy*dy+dz*dz;
                     smat[pi*nlen+ni] = (d2 <= sd8sq) ?
-                        1.0/(1.0 + d2/d0sq_s) : 0.0;
+                        1.0/(1.0 + d2/d0sq_dp) : 0.0;
                 }
             }
             nw_dp(smat.data(), plen, nlen, H_nw, trace_nw, gap_opens[g]);

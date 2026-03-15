@@ -1,32 +1,9 @@
 #ifndef INDIALIGN_NW_H
 #define INDIALIGN_NW_H
 
-#include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <vector>
-
-/* ── Pairwise TM-score similarity matrix (Np × Nn) ───────────── */
-
-inline void score_matrix(const double *moved, const double *native,
-                         const uint8_t *pv, const uint8_t *nv,
-                         double d0, double score_d8, int N, double *smat) {
-    double d0sq = std::max(d0*d0, 1e-12), sd8sq = score_d8*score_d8;
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            double val = 0;
-            if (pv[i] && nv[j]) {
-                double dx = moved[i*3]  -native[j*3];
-                double dy = moved[i*3+1]-native[j*3+1];
-                double dz = moved[i*3+2]-native[j*3+2];
-                double d2 = dx*dx+dy*dy+dz*dz;
-                if (d2 <= sd8sq)
-                    val = 1.0 / (1.0 + d2/d0sq);
-            }
-            smat[i*N+j] = val;
-        }
-    }
-}
 
 /* ── Needleman-Wunsch DP with optional gap-open penalty ──────── */
 

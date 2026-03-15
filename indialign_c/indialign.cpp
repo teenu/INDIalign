@@ -4,6 +4,8 @@
 #include "search.h"
 #include "align.h"
 #include "rescue.h"
+#include "threading.h"
+#include "ss.h"
 
 #include <cstring>
 #include <cmath>
@@ -49,10 +51,12 @@ static SeedResult do_tmscore_search(
         if (!dup) d0c_all[C_total++] = v;
     }
 
-    // 1. Build fragment seeds
+    // 1. Build fragment seeds + anchor contact seeds
     std::vector<uint8_t> smasks;
     int K = 0;
     build_seed_masks(N, valid, use_frag, smasks, K);
+    build_anchor_contact_seeds(pred, native, valid, N, d0s, d0, 5,
+                               smasks, K);
     if (K == 0) {
         SeedResult r; r.score = 0;
         double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(r.R,I,72);
@@ -71,21 +75,35 @@ static SeedResult do_tmscore_search(
         best = evaluate_seed_bank(pred, native, valid,
                                   smasks.data(), K, d0c_all, C_total,
                                   d0, sd8, Lnorm, N, max_iter, false);
-    // 3. Cross-index rescue (when structures differ in length)
+    // 2b. SS-based alignment seeds (IA2 + IA4)
+    char ss_p[4096], ss_n[4096];
+    assign_rna_ss(pred, pv, N, ss_p);
+    assign_rna_ss(native, nv, N, ss_n);
+    auto ss = evaluate_ss_seeds(pred, native, valid, pv, nv,
+                                ss_p, ss_n, best.R, best.t,
+                                d0, d0s, sd8, Lnorm, N, dp_iter);
+    if (ss.score > best.score) best = ss;
+
+    // 2c. Gapless threading (USalign IA1-style, unconditional)
+    auto gt = gapless_threading_search(pred, native, pv, nv, valid,
+                                       d0, d0s, Lnorm, N);
+    if (gt.score > best.score) best = gt;
+
+    // 3. Rescue strategies
     bool has_cross = false;
     for (int i = 0; i < N && !has_cross; i++)
         has_cross = (pv[i] != nv[i]);
-    if (has_cross && best.score < 0.5) {
+    if (best.score < 0.5) {
         auto lf = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, false);
         if (lf.score > best.score) best = lf;
     }
-    if (has_cross && best.score < 0.5) {
+    if (best.score < 0.5) {
         auto th = evaluate_threading_dp(pred, native, valid, pv, nv,
                                          d0, d0s, Lnorm, N);
         if (th.score > best.score) best = th;
     }
-    if (has_cross && best.score < 0.3) {
+    if (best.score < 0.3) {
         auto dl = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, true);
         if (dl.score > best.score) best = dl;
