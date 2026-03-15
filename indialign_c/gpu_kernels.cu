@@ -143,8 +143,8 @@ __global__ void refine_and_score_kernel(
         __syncthreads();
     }
 
-    // --- TM-score ---
-    float d0sq = fmaxf(d0*d0, 1e-12f), sd8sq = score_d8*score_d8;
+    // --- TM-score (no d8 filter, matching CPU tm_score_no_d8) ---
+    float d0sq = fmaxf(d0*d0, 1e-12f);
     float lscore = 0;
     for (int i = tid; i < N; i += BS) {
         if (!valid[i]) continue;
@@ -153,7 +153,7 @@ __global__ void refine_and_score_kernel(
         float mz = pred[i*3]*s_R[2]+pred[i*3+1]*s_R[5]+pred[i*3+2]*s_R[8]+s_t[2];
         float dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
         float d2 = dx*dx+dy*dy+dz*dz;
-        if (d2 <= sd8sq) lscore += 1.0f / (1.0f + d2/d0sq);
+        lscore += 1.0f / (1.0f + d2/d0sq);
     }
     lscore = block_reduce_sum(lscore);
     if (tid == 0) {
@@ -175,12 +175,21 @@ bool gpu_available() {
 }
 
 SeedResult gpu_evaluate_seed_bank(
-    const float *pred, const float *native, const uint8_t *valid,
+    const double *pred, const double *native, const uint8_t *valid,
     const uint8_t *seeds, int K,
-    const float *d0_cands, int C,
-    float d0, float score_d8, float Lnorm, int N, int max_iter)
+    const double *d0_cands, int C,
+    double d0, double score_d8, double Lnorm, int N, int max_iter)
 {
     int KM = K * C;
+
+    // Convert double inputs to float for GPU
+    std::vector<float> f_pred(N*3), f_native(N*3), f_d0c(C);
+    for (int i = 0; i < N*3; i++) {
+        f_pred[i] = (float)pred[i];
+        f_native[i] = (float)native[i];
+    }
+    for (int i = 0; i < C; i++) f_d0c[i] = (float)d0_cands[i];
+
     float *d_pred, *d_native, *d_d0c, *d_R, *d_t, *d_scores;
     uint8_t *d_valid, *d_seeds;
     cudaMalloc(&d_pred,   N*3*sizeof(float));
@@ -192,17 +201,17 @@ SeedResult gpu_evaluate_seed_bank(
     cudaMalloc(&d_t,      KM*3*sizeof(float));
     cudaMalloc(&d_scores, KM*sizeof(float));
 
-    cudaMemcpy(d_pred,   pred,    N*3*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_native, native,  N*3*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_valid,  valid,   N,                 cudaMemcpyHostToDevice);
-    cudaMemcpy(d_seeds,  seeds,   K*N,               cudaMemcpyHostToDevice);
-    cudaMemcpy(d_d0c,    d0_cands,C*sizeof(float),   cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pred,   f_pred.data(),   N*3*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_native, f_native.data(), N*3*sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_valid,  valid,           N,                 cudaMemcpyHostToDevice);
+    cudaMemcpy(d_seeds,  seeds,           K*N,               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_d0c,    f_d0c.data(),    C*sizeof(float),   cudaMemcpyHostToDevice);
 
     int bs = 128;
     if (N > 256) bs = 256;
     refine_and_score_kernel<<<KM, bs>>>(
         d_pred, d_native, d_valid, d_seeds, d_d0c,
-        N, K, C, max_iter, d0, score_d8, Lnorm,
+        N, K, C, max_iter, (float)d0, (float)score_d8, (float)Lnorm,
         d_R, d_t, d_scores);
 
     std::vector<float> h_scores(KM), h_R(KM*9), h_t(KM*3);
@@ -210,12 +219,12 @@ SeedResult gpu_evaluate_seed_bank(
     cudaMemcpy(h_R.data(),      d_R,      KM*9*sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_t.data(),      d_t,      KM*3*sizeof(float), cudaMemcpyDeviceToHost);
 
-    SeedResult best; best.score = -1e30f;
+    SeedResult best; best.score = -1e30;
     for (int i = 0; i < KM; i++) {
         if (h_scores[i] > best.score) {
-            best.score = h_scores[i];
-            std::memcpy(best.R, &h_R[i*9], 36);
-            std::memcpy(best.t, &h_t[i*3], 12);
+            best.score = (double)h_scores[i];
+            for (int j = 0; j < 9; j++) best.R[j] = (double)h_R[i*9+j];
+            for (int j = 0; j < 3; j++) best.t[j] = (double)h_t[i*3+j];
         }
     }
     cudaFree(d_pred); cudaFree(d_native); cudaFree(d_valid);

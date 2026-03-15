@@ -8,19 +8,19 @@
 
 /* ── d0 normalization (RNA) ────────────────────────────────────── */
 
-inline void d0_from_length_rna(float L, float *d0, float *d0s, float *sd8) {
-    float Lc = std::max(L, 1.0f);
-    if      (Lc <= 11.0f) *d0 = 0.3f;
-    else if (Lc <= 15.0f) *d0 = 0.4f;
-    else if (Lc <= 19.0f) *d0 = 0.5f;
-    else if (Lc <= 23.0f) *d0 = 0.6f;
-    else                  *d0 = 0.7f;
-    if (Lc >= 30.0f)
-        *d0 = 0.6f * std::sqrt(Lc - 0.5f) - 2.5f;
-    if (*d0 < 0.3f) *d0 = 0.3f;
-    float v = 1.24f * std::cbrt(std::max(Lc - 15.0f, 0.0f)) - 1.8f;
-    *d0s = std::clamp(v, 4.5f, 8.0f);
-    *sd8 = 1.5f * std::pow(Lc, 0.3f) + 3.5f;
+inline void d0_from_length_rna(double L, double *d0, double *d0s, double *sd8) {
+    double Lc = std::max(L, 1.0);
+    if      (Lc <= 11.0) *d0 = 0.3;
+    else if (Lc <= 15.0) *d0 = 0.4;
+    else if (Lc <= 19.0) *d0 = 0.5;
+    else if (Lc <= 23.0) *d0 = 0.6;
+    else                  *d0 = 0.7;
+    if (Lc >= 30.0)
+        *d0 = 0.6 * std::sqrt(Lc - 0.5) - 2.5;
+    if (*d0 < 0.3) *d0 = 0.3;
+    double v = 1.24 * std::cbrt(std::max(Lc - 15.0, 0.0)) - 1.8;
+    *d0s = std::clamp(v, 4.5, 8.0);
+    *sd8 = 1.5 * std::pow(Lc, 0.3) + 3.5;
 }
 
 /* ── Jacobi 4×4 symmetric eigensolve ──────────────────────────── */
@@ -60,8 +60,8 @@ inline void jacobi4(double A[4][4], double V[4][4]) {
 
 /* ── Kabsch alignment (Horn quaternion) ───────────────────────── */
 
-inline void kabsch(const float *P, const float *Q,
-                   const uint8_t *mask, int N, float *R, float *t) {
+inline void kabsch(const double *P, const double *Q,
+                   const uint8_t *mask, int N, double *R, double *t) {
     double wsum = 0, cP[3] = {}, cQ[3] = {};
     for (int i = 0; i < N; i++) {
         if (!mask[i]) continue;
@@ -71,8 +71,8 @@ inline void kabsch(const float *P, const float *Q,
         wsum += 1.0;
     }
     if (wsum < 3.0) {
-        float I[9] = {1,0,0, 0,1,0, 0,0,1};
-        std::memcpy(R, I, 36); t[0]=t[1]=t[2]=0; return;
+        double I[9] = {1,0,0, 0,1,0, 0,0,1};
+        std::memcpy(R, I, 72); t[0]=t[1]=t[2]=0; return;
     }
     for (int d = 0; d < 3; d++) { cP[d] /= wsum; cQ[d] /= wsum; }
     double H[3][3] = {};
@@ -107,75 +107,75 @@ inline void kabsch(const float *P, const float *Q,
     double qn = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
     if (qn < 1e-12) { q[0]=1; q[1]=q[2]=q[3]=0; }
     else { for (int i = 0; i < 4; i++) q[i] /= qn; }
-    float q0=q[0],q1=q[1],q2=q[2],q3=q[3];
+    double q0=q[0],q1=q[1],q2=q[2],q3=q[3];
     R[0]=q0*q0+q1*q1-q2*q2-q3*q3; R[1]=2*(q1*q2+q0*q3); R[2]=2*(q1*q3-q0*q2);
     R[3]=2*(q1*q2-q0*q3); R[4]=q0*q0-q1*q1+q2*q2-q3*q3; R[5]=2*(q2*q3+q0*q1);
     R[6]=2*(q1*q3+q0*q2); R[7]=2*(q2*q3-q0*q1); R[8]=q0*q0-q1*q1-q2*q2+q3*q3;
     for (int d = 0; d < 3; d++)
-        t[d] = (float)(cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]));
+        t[d] = cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]);
 }
 
 /* ── Transform & TM-score ─────────────────────────────────────── */
 
-inline void apply_transform(const float *P, const float *R, const float *t,
-                            float *out, int N) {
+inline void apply_transform(const double *P, const double *R, const double *t,
+                            double *out, int N) {
     for (int i = 0; i < N; i++)
         for (int d = 0; d < 3; d++)
             out[i*3+d] = P[i*3]*R[d] + P[i*3+1]*R[3+d] + P[i*3+2]*R[6+d] + t[d];
 }
 
-inline float tm_score(const float *pred, const float *native,
-                      const uint8_t *valid, const float *R, const float *t,
-                      float d0, float Lnorm, float score_d8, int N) {
-    float d0sq = std::max(d0*d0, 1e-12f), sd8sq = score_d8*score_d8;
-    float sum = 0;
+inline double tm_score(const double *pred, const double *native,
+                       const uint8_t *valid, const double *R, const double *t,
+                       double d0, double Lnorm, double score_d8, int N) {
+    double d0sq = std::max(d0*d0, 1e-12), sd8sq = score_d8*score_d8;
+    double sum = 0;
     for (int i = 0; i < N; i++) {
         if (!valid[i]) continue;
-        float mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
-        float my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
-        float mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
-        float dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
-        float d2 = dx*dx+dy*dy+dz*dz;
+        double mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
+        double my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
+        double mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
+        double dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
+        double d2 = dx*dx+dy*dy+dz*dz;
         if (d2 <= sd8sq)
-            sum += 1.0f / (1.0f + d2/d0sq);
+            sum += 1.0 / (1.0 + d2/d0sq);
     }
-    return sum / std::max(Lnorm, 1.0f);
+    return sum / std::max(Lnorm, 1.0);
 }
 
-inline float tm_score_no_d8(const float *pred, const float *native,
-                            const uint8_t *valid, const float *R, const float *t,
-                            float d0, float Lnorm, int N) {
-    float d0sq = std::max(d0*d0, 1e-12f), sum = 0;
+inline double tm_score_no_d8(const double *pred, const double *native,
+                             const uint8_t *valid, const double *R, const double *t,
+                             double d0, double Lnorm, int N) {
+    double d0sq = std::max(d0*d0, 1e-12), sum = 0;
     for (int i = 0; i < N; i++) {
         if (!valid[i]) continue;
-        float mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
-        float my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
-        float mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
-        float dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
-        float d2 = dx*dx+dy*dy+dz*dz;
-        sum += 1.0f / (1.0f + d2/d0sq);
+        double mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
+        double my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
+        double mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
+        double dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
+        double d2 = dx*dx+dy*dy+dz*dz;
+        sum += 1.0 / (1.0 + d2/d0sq);
     }
-    return sum / std::max(Lnorm, 1.0f);
+    return sum / std::max(Lnorm, 1.0);
 }
 
-inline void dist2_fused(const float *pred, const float *native,
-                        const uint8_t *valid, const float *R, const float *t,
-                        float *d2out, int N) {
+inline void dist2_fused(const double *pred, const double *native,
+                        const uint8_t *valid, const double *R, const double *t,
+                        double *d2out, int N) {
     for (int i = 0; i < N; i++) {
-        if (!valid[i]) { d2out[i] = 1e12f; continue; }
-        float mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
-        float my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
-        float mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
-        float dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
+        if (!valid[i]) { d2out[i] = 1e12; continue; }
+        double mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
+        double my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
+        double mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
+        double dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
         d2out[i] = dx*dx+dy*dy+dz*dz;
     }
 }
 
 /* ── Weighted Kabsch (continuous weights) ─────────────────────── */
 
-inline void kabsch_weighted(const float *P, const float *Q,
-                            const uint8_t *valid, const float *w,
-                            int N, float *R, float *t) {
+inline void kabsch_weighted(const double *P, const double *Q,
+                            const uint8_t *valid, const double *w,
+                            int N, double *R, double *t) {
     double wsum = 0, cP[3] = {}, cQ[3] = {};
     for (int i = 0; i < N; i++) {
         if (!valid[i] || w[i] <= 0) continue;
@@ -186,8 +186,8 @@ inline void kabsch_weighted(const float *P, const float *Q,
         wsum += wi;
     }
     if (wsum < 1e-12) {
-        float I[9] = {1,0,0, 0,1,0, 0,0,1};
-        std::memcpy(R, I, 36); t[0]=t[1]=t[2]=0; return;
+        double I[9] = {1,0,0, 0,1,0, 0,0,1};
+        std::memcpy(R, I, 72); t[0]=t[1]=t[2]=0; return;
     }
     for (int d = 0; d < 3; d++) { cP[d] /= wsum; cQ[d] /= wsum; }
     double H[3][3] = {};
@@ -222,31 +222,31 @@ inline void kabsch_weighted(const float *P, const float *Q,
     double qn = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
     if (qn < 1e-12) { q[0]=1; q[1]=q[2]=q[3]=0; }
     else { for (int i = 0; i < 4; i++) q[i] /= qn; }
-    float q0=q[0],q1=q[1],q2=q[2],q3=q[3];
+    double q0=q[0],q1=q[1],q2=q[2],q3=q[3];
     R[0]=q0*q0+q1*q1-q2*q2-q3*q3; R[1]=2*(q1*q2+q0*q3); R[2]=2*(q1*q3-q0*q2);
     R[3]=2*(q1*q2-q0*q3); R[4]=q0*q0-q1*q1+q2*q2-q3*q3; R[5]=2*(q2*q3+q0*q1);
     R[6]=2*(q1*q3+q0*q2); R[7]=2*(q2*q3-q0*q1); R[8]=q0*q0-q1*q1-q2*q2+q3*q3;
     for (int d = 0; d < 3; d++)
-        t[d] = (float)(cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]));
+        t[d] = cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]);
 }
 
 /* ── Weighted TM refinement ──────────────────────────────────── */
 
-inline void weighted_tm_refine(const float *pred, const float *native,
-                               const uint8_t *valid, float d0, float Lnorm,
-                               int N, int n_iters, float *R, float *t,
-                               float *out_score) {
-    float d0sq = std::max(d0*d0, 1e-12f);
-    float weights[4096];
+inline void weighted_tm_refine(const double *pred, const double *native,
+                               const uint8_t *valid, double d0, double Lnorm,
+                               int N, int n_iters, double *R, double *t,
+                               double *out_score) {
+    double d0sq = std::max(d0*d0, 1e-12);
+    double weights[4096];
     for (int iter = 0; iter < n_iters; iter++) {
         for (int i = 0; i < N; i++) {
             if (!valid[i]) { weights[i] = 0; continue; }
-            float mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
-            float my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
-            float mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
-            float dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
-            float d2 = dx*dx+dy*dy+dz*dz;
-            weights[i] = 1.0f / (1.0f + d2/d0sq);
+            double mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
+            double my = pred[i*3]*R[1]+pred[i*3+1]*R[4]+pred[i*3+2]*R[7]+t[1];
+            double mz = pred[i*3]*R[2]+pred[i*3+1]*R[5]+pred[i*3+2]*R[8]+t[2];
+            double dx=mx-native[i*3], dy=my-native[i*3+1], dz=mz-native[i*3+2];
+            double d2 = dx*dx+dy*dy+dz*dz;
+            weights[i] = 1.0 / (1.0 + d2/d0sq);
         }
         kabsch_weighted(pred, native, valid, weights, N, R, t);
     }

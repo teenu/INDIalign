@@ -7,7 +7,7 @@
 #include <cstdint>
 
 static constexpr int MAX_FRAG_STARTS = 50;
-static constexpr float D0_MULTS[] = {2.0f, 1.5f, 1.0f, 0.75f, 0.5f, 0.25f};
+static constexpr double D0_MULTS[] = {2.0, 1.5, 1.0, 0.75, 0.5, 0.25};
 static constexpr int N_D0_MULTS = 6;
 
 inline std::vector<int> fragment_lengths(int max_len) {
@@ -80,17 +80,17 @@ inline void build_seed_masks(int N, const uint8_t *valid, bool use_frag,
 }
 
 /* Build top-k distance seed (single frac=0.5 for strict mode). */
-inline void build_topk_seed(const float *d2, const uint8_t *valid, int N,
-                            float frac, uint8_t *mask) {
+inline void build_topk_seed(const double *d2, const uint8_t *valid, int N,
+                            double frac, uint8_t *mask) {
     int vc = 0;
     for (int i = 0; i < N; i++) vc += valid[i];
     int k = std::max(3, (int)(vc * frac));
     k = std::min(k, N);
-    std::vector<std::pair<float,int>> dv;
+    std::vector<std::pair<double,int>> dv;
     for (int i = 0; i < N; i++)
         if (valid[i]) dv.push_back({d2[i], i});
     std::sort(dv.begin(), dv.end());
-    std::memset(mask, 0, N);
+    std::memset(mask, 0, (size_t)N);
     for (int i = 0; i < std::min(k, (int)dv.size()); i++)
         mask[dv[i].second] = 1;
 }
@@ -98,19 +98,19 @@ inline void build_topk_seed(const float *d2, const uint8_t *valid, int N,
 /* ── Anchor contact seeds (transform-independent) ────────────── */
 
 inline void build_anchor_contact_seeds(
-    const float *pred, const float *native, const uint8_t *valid,
-    int N, float d0_search, float d0, int max_anchors,
+    const double *pred, const double *native, const uint8_t *valid,
+    int N, double d0_search, double d0, int max_anchors,
     std::vector<uint8_t> &masks, int &K)
 {
     // Contact seed radii: d0s × {1.0,1.5,2.0} ∪ d0 + {1.0,2.0,3.0}
-    float radii[8]; int nrad = 0;
-    float mr[] = {d0_search, d0_search*1.5f, d0_search*2.0f};
-    float ar[] = {d0+1.0f, d0+2.0f, d0+3.0f};
+    double radii[8]; int nrad = 0;
+    double mr[] = {d0_search, d0_search*1.5, d0_search*2.0};
+    double ar[] = {d0+1.0, d0+2.0, d0+3.0};
     for (int i = 0; i < 3; i++) radii[nrad++] = mr[i];
     for (int i = 0; i < 3; i++) {
         bool dup = false;
         for (int j = 0; j < nrad && !dup; j++)
-            dup = (std::abs(radii[j] - ar[i]) < 0.01f);
+            dup = (std::abs(radii[j] - ar[i]) < 0.01);
         if (!dup) radii[nrad++] = ar[i];
     }
 
@@ -120,10 +120,10 @@ inline void build_anchor_contact_seeds(
     if (V < 3) return;
 
     for (int ri = 0; ri < nrad; ri++) {
-        float rad = radii[ri];
+        double rad = radii[ri];
         if (rad <= 0) continue;
-        float rad_sq = rad * rad;
-        float tol = std::max(0.5f, rad * 0.25f);
+        double rad_sq = rad * rad;
+        double tol = std::max(0.5, rad * 0.25);
 
         // Count consistent neighbors per valid residue
         std::vector<int> counts(V, 0);
@@ -133,13 +133,13 @@ inline void build_anchor_contact_seeds(
             for (int b = 0; b < V; b++) {
                 if (a == b) continue;
                 int j = vidx[b];
-                float pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
+                double pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
                       pdz=pred[i*3+2]-pred[j*3+2];
-                float pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
+                double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
                 if (pd2 > rad_sq) continue;
-                float ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
+                double ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
                       ndz=native[i*3+2]-native[j*3+2];
-                float nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
+                double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
                 if (nd2 > rad_sq) continue;
                 if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
                     counts[a]++;
@@ -161,13 +161,13 @@ inline void build_anchor_contact_seeds(
             for (int b = 0; b < V; b++) {
                 int j = vidx[b];
                 if (a == b) { mask[j] = 1; mc++; continue; }
-                float pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
+                double pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
                       pdz=pred[i*3+2]-pred[j*3+2];
-                float pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
+                double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
                 if (pd2 > rad_sq) continue;
-                float ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
+                double ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
                       ndz=native[i*3+2]-native[j*3+2];
-                float nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
+                double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
                 if (nd2 > rad_sq) continue;
                 if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
                     { mask[j] = 1; mc++; }

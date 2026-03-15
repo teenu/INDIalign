@@ -45,13 +45,13 @@ inline int local_jump(int length, bool dense) {
 /* ── Evaluate local fragment DP seeds (OpenMP parallel) ──────── */
 
 inline SeedResult evaluate_local_fragment_dp(
-    const float *pred, const float *native, const uint8_t *valid,
+    const double *pred, const double *native, const uint8_t *valid,
     const uint8_t *pv, const uint8_t *nv,
-    float d0, float d0_search, float Lnorm, int N, bool dense)
+    double d0, double d0_search, double Lnorm, int N, bool dense)
 {
     SeedResult best;
-    best.score = -1e30f;
-    float I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,36);
+    best.score = -1e30;
+    double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,72);
     best.t[0]=best.t[1]=best.t[2]=0;
 
     int plen = 0, nlen = 0;
@@ -76,21 +76,21 @@ inline SeedResult evaluate_local_fragment_dp(
     #pragma omp parallel
     {
         SeedResult local_best;
-        local_best.score = -1e30f;
+        local_best.score = -1e30;
 
         #pragma omp for schedule(dynamic)
         for (int w = 0; w < nwork; w++) {
             int flen = work[w].flen, ps = work[w].ps, ns = work[w].ns;
-            std::vector<float> Pf(flen*3), Qf(flen*3);
+            std::vector<double> Pf(flen*3), Qf(flen*3);
             std::vector<uint8_t> fm(flen, 1);
             for (int i = 0; i < flen; i++) {
-                std::memcpy(&Pf[i*3], &pred[(ps+i)*3], 12);
-                std::memcpy(&Qf[i*3], &native[(ns+i)*3], 12);
+                std::memcpy(&Pf[i*3], &pred[(ps+i)*3], 24);
+                std::memcpy(&Qf[i*3], &native[(ns+i)*3], 24);
             }
-            float sR[9], st[3];
+            double sR[9], st[3];
             kabsch(Pf.data(), Qf.data(), fm.data(), flen, sR, st);
             auto dp = dp_refine(pred, native, valid, pv, nv,
-                                sR, st, d0, d0_search, 100.0f,
+                                sR, st, d0, d0_search, 100.0,
                                 Lnorm, N, 2, true);
             if (dp.score > local_best.score) local_best = dp;
         }
@@ -104,13 +104,13 @@ inline SeedResult evaluate_local_fragment_dp(
 /* ── Evaluate threading DP seeds (OpenMP parallel) ───────────── */
 
 inline SeedResult evaluate_threading_dp(
-    const float *pred, const float *native, const uint8_t *valid,
+    const double *pred, const double *native, const uint8_t *valid,
     const uint8_t *pv, const uint8_t *nv,
-    float d0, float d0_search, float Lnorm, int N)
+    double d0, double d0_search, double Lnorm, int N)
 {
     SeedResult best;
-    best.score = -1e30f;
-    float I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,36);
+    best.score = -1e30;
+    double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,72);
     best.t[0]=best.t[1]=best.t[2]=0;
 
     int plen = 0, nlen = 0;
@@ -128,7 +128,7 @@ inline SeedResult evaluate_threading_dp(
     #pragma omp parallel
     {
         SeedResult local_best;
-        local_best.score = -1e30f;
+        local_best.score = -1e30;
 
         #pragma omp for schedule(dynamic)
         for (int oi = 0; oi < noff; oi++) {
@@ -143,12 +143,12 @@ inline SeedResult evaluate_threading_dp(
 
             auto det = alignment_detailed_search(
                 pred, native, ap, an, overlap,
-                d0, d0_search, 100.0f, Lnorm, N, true, 8, 5);
+                d0, d0_search, 100.0, Lnorm, N, true, 8, 5);
 
             auto dp = dp_refine(pred, native, valid, pv, nv,
-                                det.R, det.t, d0, d0_search, 100.0f,
+                                det.R, det.t, d0, d0_search, 100.0,
                                 Lnorm, N, 1, true);
-            float cand_score = std::max(det.score, dp.score);
+            double cand_score = std::max(det.score, dp.score);
             SeedResult cand;
             if (dp.score > det.score) {
                 cand = dp;
