@@ -15,6 +15,7 @@ inline void refine_from_rt(
     double d0_search, int N, int n_iter, double *R, double *t)
 {
     double d0s_sq = d0_search * d0_search;
+    int prev_cnt = -1;
     for (int iter = 0; iter < n_iter; iter++) {
         uint8_t sel[4096]; int cnt = 0;
         for (int i = 0; i < N; i++) {
@@ -27,6 +28,8 @@ inline void refine_from_rt(
             cnt += sel[i];
         }
         if (cnt >= 3) kabsch(pred, native, sel, N, R, t);
+        if (cnt == prev_cnt) break;
+        prev_cnt = cnt;
     }
 }
 

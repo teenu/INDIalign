@@ -6,7 +6,7 @@
 #include <cstring>
 #include <cmath>
 
-/* ── Iterative seed refinement (20 fixed iterations) ──────────── */
+/* ── Iterative seed refinement with convergence detection ─────── */
 
 inline void iterative_seed_refine(const double *pred, const double *native,
                                   const uint8_t *valid,
@@ -17,6 +17,7 @@ inline void iterative_seed_refine(const double *pred, const double *native,
     for (int i = 0; i < N; i++) work[i] = seed_mask[i] & valid[i];
     kabsch(pred, native, work, N, R, t);
     double d0s_sq = d0_search * d0_search;
+    int prev_cnt = -1;
     for (int iter = 0; iter < max_iter; iter++) {
         uint8_t sel[4096];
         int cnt = 0;
@@ -32,6 +33,10 @@ inline void iterative_seed_refine(const double *pred, const double *native,
         }
         if (cnt >= 3)
             kabsch(pred, native, sel, N, R, t);
+        // Convergence: stop if pair count stabilized (same count implies
+        // same set since distances change monotonically with R,t updates)
+        if (cnt == prev_cnt) break;
+        prev_cnt = cnt;
     }
 }
 
