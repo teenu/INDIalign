@@ -2,7 +2,7 @@
 
 RNA structural alignment via multi-strategy TM-score optimization.
 
-INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. On **128 real PDB pairs** (26 NMR RNA ensembles), INDIalign finds a higher-scoring superposition on **84% of pairs** with a mean TM-score gain of +0.006 (p < 10^-19). On 500 synthetic pairs, it wins **66%** with a smaller margin. It is **1.8--3.8x slower** than USalign depending on structure size.
+INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. Across three benchmarks on real PDB structures and synthetic pairs, INDIalign consistently finds higher-scoring superpositions than USalign (**54--84% win rate**, p < 0.004), with the largest gains on hard targets. It is **1.8--3.5x slower** depending on structure size and difficulty.
 
 ## Quick Start
 
@@ -91,6 +91,28 @@ Both tools receive the same input pair and each produces its own superposition (
 
 Speed on PDB structures: INDIalign 4.1 ms/pair, USalign 2.3 ms/pair (1.8x).
 
+### Challenging PDB Pairs
+
+72 harder pairs: most divergent NMR model pairs (50--155 nt), X-ray chain-vs-chain (46--412 nt), and cross-structure pairs from the same RNA family (TPP, SAM, purine riboswitches; HDV ribozyme).
+
+| Metric | Value |
+|---|---|
+| INDIalign wins | 39 / 72 (54.2%) |
+| USalign wins | 18 / 72 (25.0%) |
+| Ties | 15 / 72 (20.8%) |
+| Mean TM-score delta | +0.000976 |
+| Sign test p-value | 3.8 x 10^-3 |
+| Wilcoxon p-value | 1.5 x 10^-3 |
+
+| Difficulty | N | INDIalign wins | USalign wins | Mean delta |
+|---|---|---|---|---|
+| Hard (TM < 0.3) | 10 | 7 | 0 | +0.005522 |
+| Medium (0.3--0.5) | 16 | 6 | 5 | +0.000098 |
+| Moderate (0.5--0.7) | 17 | 9 | 7 | +0.000431 |
+| Easy (TM > 0.7) | 29 | 17 | 6 | +0.000213 |
+
+Speed on challenging pairs: INDIalign 20.7 ms/pair, USalign 5.8 ms/pair (3.5x).
+
 ### Synthetic Pairs
 
 500 synthetic RNA-like coordinate pairs, lengths 40--300, Gaussian noise sigma ~ U(0.5, 14.0) angstroms, fixed seed (42).
@@ -115,7 +137,7 @@ Speed on synthetic pairs: INDIalign 83 ms/pair, USalign 22 ms/pair (3.8x).
 
 ### Speed
 
-INDIalign trades speed for search breadth. The speed ratio depends on structure size: 1.8x on short NMR structures (27--77 nt), 3.8x on longer synthetic pairs (40--300 nt). If throughput is the primary constraint, USalign is the better choice.
+INDIalign trades speed for search breadth. The speed ratio depends on structure size and difficulty: 1.8x on short NMR structures (27--77 nt), 3.5x on challenging PDB pairs, 3.8x on longer synthetic pairs (40--300 nt). If throughput is the primary constraint, USalign is the better choice.
 
 ### Reproducing
 
@@ -123,8 +145,9 @@ INDIalign trades speed for search breadth. The speed ratio depends on structure 
 # Requires: USalign binary on PATH (or set USALIGN=/path/to/USalign),
 #           numpy, scipy
 cd benchmark
-python pdb_benchmark.py            # real PDB structures
-python fair_benchmark.py 500       # synthetic pairs
+python pdb_benchmark.py            # NMR model-vs-model (128 pairs)
+python pdb_hard_benchmark.py       # challenging PDB pairs (72 pairs)
+python fair_benchmark.py 500       # synthetic pairs (500 pairs)
 ```
 
 ## Algorithm
@@ -220,7 +243,7 @@ int indialign_cuda_available(void);
 ## Limitations
 
 1. **Speed.** 1.8--3.8x slower than USalign depending on structure size. The multi-strategy pipeline is inherently more expensive.
-2. **Benchmark scope.** PDB benchmark covers NMR RNA ensembles (27--77 nt). Performance on longer structures, protein-RNA complexes, or prediction model outputs may differ.
+2. **Benchmark scope.** PDB benchmarks cover NMR ensembles (27--155 nt), X-ray chain pairs (up to 412 nt), and cross-structure riboswitch/ribozyme families. Performance on protein-RNA complexes or prediction model outputs has not been tested.
 3. **Max length.** Fixed 4096-element arrays in the C core. Sequences longer than 4096 residues are rejected.
 4. **Same-length assumption.** The C API requires pred and native to have the same length N. Structures with different lengths require pre-alignment or padding with invalid masks.
 
