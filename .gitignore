@@ -12,6 +12,12 @@ __pycache__/
 # Triton cache
 .triton/
 
+# Build artifacts
+*.o
+*.so
+indialign_c/libindialign.so
+indialign_c/gpu_kernels.o
+
 # IDE
 .vscode/
 .idea/

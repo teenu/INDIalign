@@ -2,7 +2,7 @@ CXX      ?= g++
 NVCC     ?= nvcc
 CXXFLAGS  = -O3 -ffast-math -std=c++20 -fPIC -Wall -Wextra -fopenmp
 LDFLAGS   = -shared -fopenmp
-CUDA_ARCH ?= 90
+CUDA_ARCH ?= native
 
 TARGET = libindialign.so
 
@@ -29,7 +29,7 @@ gpu: gpu_kernels.o
 
 gpu_kernels.o: gpu_kernels.cu gpu_device.cuh search.h core.h seeds.h
 	$(NVCC) -O3 --compiler-options -fPIC -std=c++20 \
-		-gencode arch=compute_$(CUDA_ARCH),code=sm_$(CUDA_ARCH) \
+		-arch=$(CUDA_ARCH) \
 		-c gpu_kernels.cu -o gpu_kernels.o
 
 clean:

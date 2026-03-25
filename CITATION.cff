@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use INDIalign in your research, please cite it as below."
+type: software
+title: "INDIalign"
+abstract: "RNA structural alignment via multi-strategy TM-score optimization"
+authors:
+  - family-names: Chalapati
+    given-names: Sachin
+version: "1.0.0"
+date-released: "2026-03-25"
+license: MIT
+url: "https://github.com/teenu/INDIalign"
+repository-code: "https://github.com/teenu/INDIalign"
+keywords:
+  - RNA
+  - structural alignment
+  - TM-score
+  - Kabsch
+  - bioinformatics

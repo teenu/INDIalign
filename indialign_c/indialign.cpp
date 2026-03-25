@@ -63,7 +63,14 @@ static SeedResult do_tmscore_search(
         r.t[0]=r.t[1]=r.t[2]=0; return r;
     }
 
-    // 2. Evaluate seed bank (no d8 filter for scoring, matching weighted_all)
+    // Rescore a candidate R,t with same-index tm_score_no_d8.
+    // Cross-index DP functions return scores on compact aligned pairs;
+    // this converts to the actual same-index TM-score on full arrays.
+    auto rescore = [&](SeedResult &r) {
+        r.score = tm_score_no_d8(pred, native, valid, r.R, r.t, d0, Lnorm, N);
+    };
+
+    // 2. Evaluate seed bank (same-index, no d8 filter)
     SeedResult best;
 #ifdef INDIALIGN_CUDA
     if (use_cuda && gpu_available())
@@ -75,41 +82,46 @@ static SeedResult do_tmscore_search(
         best = evaluate_seed_bank(pred, native, valid,
                                   smasks.data(), K, d0c_all, C_total,
                                   d0, sd8, Lnorm, N, max_iter, false);
-    // 2b. SS-based alignment seeds (IA2 + IA4)
+
+    // 2b. SS-based alignment seeds (IA2 + IA4) — cross-index, rescore
     char ss_p[4096], ss_n[4096];
     assign_rna_ss(pred, pv, N, ss_p);
     assign_rna_ss(native, nv, N, ss_n);
     auto ss = evaluate_ss_seeds(pred, native, valid, pv, nv,
                                 ss_p, ss_n, best.R, best.t,
                                 d0, d0s, sd8, Lnorm, N, dp_iter);
+    rescore(ss);
     if (ss.score > best.score) best = ss;
 
-    // 2c. Gapless threading (USalign IA1-style, unconditional)
+    // 2c. Gapless threading (same-index scoring)
     auto gt = gapless_threading_search(pred, native, pv, nv, valid,
                                        d0, d0s, Lnorm, N);
     if (gt.score > best.score) best = gt;
 
-    // 3. Rescue strategies
+    // 3. Rescue strategies — all cross-index, rescore each
     bool has_cross = false;
     for (int i = 0; i < N && !has_cross; i++)
         has_cross = (pv[i] != nv[i]);
     if (best.score < 0.5) {
         auto lf = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, false);
+        rescore(lf);
         if (lf.score > best.score) best = lf;
     }
     if (best.score < 0.5) {
         auto th = evaluate_threading_dp(pred, native, valid, pv, nv,
                                          d0, d0s, Lnorm, N);
+        rescore(th);
         if (th.score > best.score) best = th;
     }
     if (best.score < 0.3) {
         auto dl = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, true);
+        rescore(dl);
         if (dl.score > best.score) best = dl;
     }
 
-    // 4. Two-pass distance seed
+    // 4. Two-pass distance seed (same-index scoring)
     std::vector<double> d2v(N);
     dist2_fused(pred, native, valid, best.R, best.t, d2v.data(), N);
     std::vector<uint8_t> topk_mask(N);
@@ -117,13 +129,21 @@ static SeedResult do_tmscore_search(
     int topk_cnt = 0;
     for (int i = 0; i < N; i++) topk_cnt += topk_mask[i];
     if (topk_cnt >= 3) {
-        auto tp = evaluate_seed_bank(pred, native, valid,
-                                     topk_mask.data(), 1, d0c_all, C_total,
-                                     d0, sd8, Lnorm, N, max_iter, false);
+        SeedResult tp;
+#ifdef INDIALIGN_CUDA
+        if (use_cuda && gpu_available())
+            tp = gpu_evaluate_seed_bank(pred, native, valid,
+                                        topk_mask.data(), 1, d0c_all, C_total,
+                                        d0, sd8, Lnorm, N, max_iter);
+        else
+#endif
+            tp = evaluate_seed_bank(pred, native, valid,
+                                    topk_mask.data(), 1, d0c_all, C_total,
+                                    d0, sd8, Lnorm, N, max_iter, false);
         if (tp.score > best.score) best = tp;
     }
 
-    // 5. DP refinement — track best R,t across all candidates
+    // 5. DP refinement — all candidates rescored with same-index
     auto update_best = [&](const double *R, const double *t, double sc) {
         if (sc > best.score) {
             best.score = sc;
@@ -137,7 +157,6 @@ static SeedResult do_tmscore_search(
         auto dp = dp_refine(pred, native, valid, pv, nv,
                             best.R, best.t, d0, d0s, sd8, Lnorm,
                             N, dp_iter, false);
-        update_best(dp.R, dp.t, dp.score);
         double dp_id = tm_score_no_d8(pred, native, valid,
                                       dp.R, dp.t, d0, Lnorm, N);
         update_best(dp.R, dp.t, dp_id);
@@ -150,20 +169,18 @@ static SeedResult do_tmscore_search(
             auto idp = dp_refine(pred, native, valid, pv, nv,
                                  I, z, d0, d0s, sd8, Lnorm,
                                  N, dp_iter, true);
-            update_best(idp.R, idp.t, idp.score);
             double idp_id = tm_score_no_d8(pred, native, valid,
                                            idp.R, idp.t, d0, Lnorm, N);
             update_best(idp.R, idp.t, idp_id);
 
             int extra = std::max(0, 5 - dp_iter);
             if (extra > 0 && best.score < 0.36) {
-                bool use_seed = (seed_score > dp.score);
+                bool use_seed = (seed_score > dp_id);
                 const double *eR = use_seed ? best.R : dp.R;
                 const double *et = use_seed ? best.t : dp.t;
                 auto ex = dp_refine(pred, native, valid, pv, nv,
                                     eR, et, d0, d0s, sd8, Lnorm,
                                     N, extra, true);
-                update_best(ex.R, ex.t, ex.score);
                 double ex_id = tm_score_no_d8(pred, native, valid,
                                               ex.R, ex.t, d0, Lnorm, N);
                 update_best(ex.R, ex.t, ex_id);
@@ -195,7 +212,6 @@ static SeedResult do_tmscore_search(
             auto tdp = dp_refine(pred, native, valid, pv, nv,
                                  sR, st, d0, d0s, sd8, Lnorm,
                                  N, dp_iter, true);
-            update_best(tdp.R, tdp.t, tdp.score);
             double sc = tm_score_no_d8(pred, native, valid,
                                        tdp.R, tdp.t, d0, Lnorm, N);
             update_best(tdp.R, tdp.t, sc);
