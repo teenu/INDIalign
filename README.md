@@ -2,7 +2,7 @@
 
 RNA structural alignment via multi-strategy TM-score optimization.
 
-INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. On a 500-pair synthetic benchmark scored by an identical common TM-score function, INDIalign finds a higher-scoring superposition on **66% of pairs** (vs 27% for USalign), with the advantage concentrated on hard targets. It is **3.8x slower** than USalign.
+INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. On **128 real PDB pairs** (26 NMR RNA ensembles), INDIalign finds a higher-scoring superposition on **84% of pairs** with a mean TM-score gain of +0.006 (p < 10^-19). On 500 synthetic pairs, it wins **66%** with a smaller margin. It is **1.8--3.8x slower** than USalign depending on structure size.
 
 ## Quick Start
 
@@ -68,14 +68,32 @@ print(f"TM-score: {res.score:.4f}")
 
 Both tools receive the same input pair and each produces its own superposition (R, t). Both transforms are then scored by an **identical common scorer** -- same d0 formula, same TM-score formula `sum(1 / (1 + d^2/d0^2)) / Lnorm`, no d8 filter. This eliminates self-reporting bias.
 
-- 500 synthetic RNA-like coordinate pairs (C1' atoms)
-- Lengths: 40--300 residues (uniform random)
-- Noise: random rotation + Gaussian perturbation, sigma ~ U(0.5, 14.0) angstroms
-- TM-scores span 0.05 to 0.95 across the dataset
-- Fixed random seed (42) for reproducibility
-- Integrity check: self-reported vs common score correlation = 1.000 for both tools
+### Real PDB Structures
 
-### Results
+128 pairs from 26 NMR RNA ensembles downloaded from RCSB PDB (27--77 nucleotides). Each pair aligns model 1 against other models from the same ensemble, providing natural conformational variation.
+
+| Metric | Value |
+|---|---|
+| INDIalign wins | 108 / 128 (84.4%) |
+| USalign wins | 13 / 128 (10.2%) |
+| Ties | 7 / 128 (5.5%) |
+| Mean TM-score delta | +0.005995 |
+| Median TM-score delta | +0.003391 |
+| Sign test p-value | 4.2 x 10^-20 |
+| Wilcoxon p-value | 1.7 x 10^-19 |
+
+| Difficulty | N | INDIalign wins | USalign wins | Ties | Mean delta |
+|---|---|---|---|---|---|
+| Hard (TM < 0.3) | 6 | 6 | 0 | 0 | +0.007664 |
+| Medium (0.3--0.5) | 80 | 66 | 9 | 5 | +0.007062 |
+| Moderate (0.5--0.7) | 31 | 28 | 2 | 1 | +0.004886 |
+| Easy (TM > 0.7) | 11 | 8 | 2 | 1 | +0.000447 |
+
+Speed on PDB structures: INDIalign 4.1 ms/pair, USalign 2.3 ms/pair (1.8x).
+
+### Synthetic Pairs
+
+500 synthetic RNA-like coordinate pairs, lengths 40--300, Gaussian noise sigma ~ U(0.5, 14.0) angstroms, fixed seed (42).
 
 | Metric | Value |
 |---|---|
@@ -83,11 +101,7 @@ Both tools receive the same input pair and each produces its own superposition (
 | USalign wins | 137 / 500 (27.4%) |
 | Ties | 33 / 500 (6.6%) |
 | Mean TM-score delta | +0.000477 |
-| Median TM-score delta | +0.000103 |
 | Sign test p-value | 9.7 x 10^-20 |
-| Wilcoxon p-value | 2.1 x 10^-22 |
-
-### Stratified by Difficulty
 
 | Difficulty | N | INDIalign wins | USalign wins | Ties | Mean delta |
 |---|---|---|---|---|---|
@@ -97,16 +111,11 @@ Both tools receive the same input pair and each produces its own superposition (
 | Moderate (0.5--0.7) | 50 | 18 | 31 | 1 | -0.000013 |
 | Easy (TM > 0.7) | 52 | 33 | 11 | 8 | +0.000012 |
 
-INDIalign's advantage concentrates on hard and very hard targets. On moderate targets (TM 0.5--0.7), USalign finds slightly better superpositions on average.
+Speed on synthetic pairs: INDIalign 83 ms/pair, USalign 22 ms/pair (3.8x).
 
 ### Speed
 
-| Tool | Mean time / pair | Ratio |
-|---|---|---|
-| USalign | 22 ms | 1.0x |
-| INDIalign | 83 ms | 3.8x |
-
-INDIalign trades speed for search breadth. If throughput is the primary constraint, USalign is the better choice.
+INDIalign trades speed for search breadth. The speed ratio depends on structure size: 1.8x on short NMR structures (27--77 nt), 3.8x on longer synthetic pairs (40--300 nt). If throughput is the primary constraint, USalign is the better choice.
 
 ### Reproducing
 
@@ -114,7 +123,8 @@ INDIalign trades speed for search breadth. If throughput is the primary constrai
 # Requires: USalign binary on PATH (or set USALIGN=/path/to/USalign),
 #           numpy, scipy
 cd benchmark
-python fair_benchmark.py 500
+python pdb_benchmark.py            # real PDB structures
+python fair_benchmark.py 500       # synthetic pairs
 ```
 
 ## Algorithm
@@ -209,11 +219,10 @@ int indialign_cuda_available(void);
 
 ## Limitations
 
-1. **Speed.** 3.8x slower than USalign on average. The multi-strategy pipeline is inherently more expensive.
-2. **Synthetic benchmark.** Current benchmark uses synthetic coordinate pairs with Gaussian noise. Real RNA structures from PDB or prediction models may have different error distributions.
-3. **Marginal mean improvement.** The mean TM-score delta is +0.0005. The advantage is in win rate on hard targets, not in average score magnitude.
-4. **Max length.** Fixed 4096-element arrays in the C core. Sequences longer than 4096 residues are rejected.
-5. **Same-length assumption.** The C API requires pred and native to have the same length N. Structures with different lengths require pre-alignment or padding with invalid masks.
+1. **Speed.** 1.8--3.8x slower than USalign depending on structure size. The multi-strategy pipeline is inherently more expensive.
+2. **Benchmark scope.** PDB benchmark covers NMR RNA ensembles (27--77 nt). Performance on longer structures, protein-RNA complexes, or prediction model outputs may differ.
+3. **Max length.** Fixed 4096-element arrays in the C core. Sequences longer than 4096 residues are rejected.
+4. **Same-length assumption.** The C API requires pred and native to have the same length N. Structures with different lengths require pre-alignment or padding with invalid masks.
 
 ## Citation
 
