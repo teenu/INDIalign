@@ -176,7 +176,9 @@ cd indialign_c && make
 cd indialign_c && make gpu CUDA_ARCH=sm_90
 ```
 
-**Requirements:** C++20 compiler (g++ 10+ or clang 13+), OpenMP. Optional: CUDA toolkit 12+ for GPU acceleration.
+**Requirements:** C++20 compiler (g++ 10+ or clang 13+), OpenMP. Optional: CUDA toolkit 12+ for GPU acceleration. The GPU path uses float32 internally and falls back to CPU on any CUDA error.
+
+**macOS:** Apple Clang does not ship with OpenMP. Install it via `brew install libomp` and add `-I$(brew --prefix libomp)/include -L$(brew --prefix libomp)/lib` to CXXFLAGS/LDFLAGS, or use GCC (`brew install gcc`).
 
 ## C API
 

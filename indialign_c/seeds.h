@@ -90,7 +90,7 @@ inline void build_topk_seed(const double *d2, const uint8_t *valid, int N,
     for (int i = 0; i < N; i++)
         if (valid[i]) dv.push_back({d2[i], i});
     std::sort(dv.begin(), dv.end());
-    std::memset(mask, 0, (size_t)N);
+    for (int i = 0; i < N; i++) mask[i] = 0;
     for (int i = 0; i < std::min(k, (int)dv.size()); i++)
         mask[dv[i].second] = 1;
 }

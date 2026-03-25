@@ -2,6 +2,15 @@
 #include "search.h"
 #include <cstdio>
 
+#define CUDA_CHECK(call) do { \
+    cudaError_t err = (call); \
+    if (err != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d: %s\n", \
+                __FILE__, __LINE__, cudaGetErrorString(err)); \
+        return fallback; \
+    } \
+} while(0)
+
 static bool g_gpu_ok = false;
 static bool g_gpu_checked = false;
 
@@ -174,15 +183,21 @@ bool gpu_available() {
     return g_gpu_ok;
 }
 
+// GPU uses float32 internally. For typical RNA coordinates (< 1000 A),
+// this gives ~0.001 A precision — sufficient for TM-score alignment.
+// Results may differ slightly from the CPU (float64) path.
 SeedResult gpu_evaluate_seed_bank(
     const double *pred, const double *native, const uint8_t *valid,
     const uint8_t *seeds, int K,
     const double *d0_cands, int C,
     double d0, double score_d8, double Lnorm, int N, int max_iter)
 {
+    // On any CUDA error, fall back to CPU evaluation
+    SeedResult fallback = evaluate_seed_bank(pred, native, valid, seeds, K,
+        d0_cands, C, d0, score_d8, Lnorm, N, max_iter, false);
+
     int KM = K * C;
 
-    // Convert double inputs to float for GPU
     std::vector<float> f_pred(N*3), f_native(N*3), f_d0c(C);
     for (int i = 0; i < N*3; i++) {
         f_pred[i] = (float)pred[i];
@@ -190,22 +205,24 @@ SeedResult gpu_evaluate_seed_bank(
     }
     for (int i = 0; i < C; i++) f_d0c[i] = (float)d0_cands[i];
 
-    float *d_pred, *d_native, *d_d0c, *d_R, *d_t, *d_scores;
-    uint8_t *d_valid, *d_seeds;
-    cudaMalloc(&d_pred,   N*3*sizeof(float));
-    cudaMalloc(&d_native, N*3*sizeof(float));
-    cudaMalloc(&d_valid,  N);
-    cudaMalloc(&d_seeds,  K*N);
-    cudaMalloc(&d_d0c,    C*sizeof(float));
-    cudaMalloc(&d_R,      KM*9*sizeof(float));
-    cudaMalloc(&d_t,      KM*3*sizeof(float));
-    cudaMalloc(&d_scores, KM*sizeof(float));
+    float *d_pred=nullptr, *d_native=nullptr, *d_d0c=nullptr;
+    float *d_R=nullptr, *d_t=nullptr, *d_scores=nullptr;
+    uint8_t *d_valid=nullptr, *d_seeds=nullptr;
 
-    cudaMemcpy(d_pred,   f_pred.data(),   N*3*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_native, f_native.data(), N*3*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_valid,  valid,           N,                 cudaMemcpyHostToDevice);
-    cudaMemcpy(d_seeds,  seeds,           K*N,               cudaMemcpyHostToDevice);
-    cudaMemcpy(d_d0c,    f_d0c.data(),    C*sizeof(float),   cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_pred,   N*3*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_native, N*3*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_valid,  N));
+    CUDA_CHECK(cudaMalloc(&d_seeds,  (size_t)K*N));
+    CUDA_CHECK(cudaMalloc(&d_d0c,    C*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_R,      (size_t)KM*9*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_t,      (size_t)KM*3*sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_scores, KM*sizeof(float)));
+
+    CUDA_CHECK(cudaMemcpy(d_pred,   f_pred.data(),   N*3*sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_native, f_native.data(), N*3*sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_valid,  valid,           N,                 cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_seeds,  seeds,           (size_t)K*N,       cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_d0c,    f_d0c.data(),    C*sizeof(float),   cudaMemcpyHostToDevice));
 
     int bs = 128;
     if (N > 256) bs = 256;
@@ -213,11 +230,12 @@ SeedResult gpu_evaluate_seed_bank(
         d_pred, d_native, d_valid, d_seeds, d_d0c,
         N, K, C, max_iter, (float)d0, (float)score_d8, (float)Lnorm,
         d_R, d_t, d_scores);
+    CUDA_CHECK(cudaGetLastError());
 
     std::vector<float> h_scores(KM), h_R(KM*9), h_t(KM*3);
-    cudaMemcpy(h_scores.data(), d_scores, KM*sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_R.data(),      d_R,      KM*9*sizeof(float), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_t.data(),      d_t,      KM*3*sizeof(float), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(h_scores.data(), d_scores, KM*sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_R.data(),      d_R,      KM*9*sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_t.data(),      d_t,      KM*3*sizeof(float), cudaMemcpyDeviceToHost));
 
     SeedResult best; best.score = -1e30;
     for (int i = 0; i < KM; i++) {
