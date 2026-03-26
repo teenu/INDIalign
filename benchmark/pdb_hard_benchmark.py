@@ -8,14 +8,18 @@
 import ctypes, json, math, os, re, subprocess, sys, tempfile, time, urllib.request
 import numpy as np
 
-USALIGN = os.environ.get("USALIGN", "/tmp/USalign/USalign")
-INDIALIB = os.environ.get("INDIALIB", "/tmp/INDIalign/indialign_c/libindialign.so")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+USALIGN = os.environ.get("USALIGN", "USalign")
+INDIALIB = os.environ.get("INDIALIB",
+    os.path.join(SCRIPT_DIR, "..", "indialign_c", "libindialign.so"))
 lib = ctypes.CDLL(INDIALIB)
 
 class Cfg(ctypes.Structure):
     _fields_ = [("backend_mode",ctypes.c_int),("use_fragment_search",ctypes.c_int),
                 ("max_iter",ctypes.c_int),("dp_iter",ctypes.c_int),
-                ("max_mem_gb",ctypes.c_double),("request_cuda",ctypes.c_int)]
+                ("max_mem_gb",ctypes.c_double),("request_cuda",ctypes.c_int),
+                ("rescue_score_1",ctypes.c_double),("rescue_score_2",ctypes.c_double),
+                ("early_term_score",ctypes.c_double)]
 class Inp(ctypes.Structure):
     _fields_ = [("length",ctypes.c_int),
                 ("pred_xyz",ctypes.POINTER(ctypes.c_double)),
