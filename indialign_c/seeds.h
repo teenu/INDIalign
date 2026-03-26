@@ -5,6 +5,8 @@
 #include <set>
 #include <algorithm>
 #include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
 
 static constexpr int MAX_FRAG_STARTS = 50;
 static constexpr double D0_MULTS[] = {2.0, 1.5, 1.0, 0.75, 0.5, 0.25};
@@ -95,7 +97,69 @@ inline void build_topk_seed(const double *d2, const uint8_t *valid, int N,
         mask[dv[i].second] = 1;
 }
 
-/* ── Anchor contact seeds (transform-independent) ────────────── */
+/* ── FNV-1a hash for seed deduplication ───────────────────────── */
+
+inline uint64_t hash_mask(const uint8_t *mask, int N) {
+    uint64_t h = 14695981039346656037ULL;
+    for (int i = 0; i < N; i++) {
+        h ^= mask[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+/* ── Spatial grid for neighbor queries ────────────────────────── */
+
+struct SpatialGrid {
+    std::unordered_map<int64_t, std::vector<int>> cells;
+    double cell_size;
+    static constexpr int64_t P = 100003; // prime for hashing
+
+    SpatialGrid(const double *xyz, const std::vector<int> &indices,
+                double cs) : cell_size(cs) {
+        for (int idx : indices) {
+            int64_t key = cell_key(xyz[idx*3], xyz[idx*3+1], xyz[idx*3+2]);
+            cells[key].push_back(idx);
+        }
+    }
+
+    int64_t cell_key(double x, double y, double z) const {
+        auto fi = [](double v, double cs) -> int64_t {
+            return (int64_t)std::floor(v / cs);
+        };
+        int64_t ix = fi(x, cell_size), iy = fi(y, cell_size),
+                iz = fi(z, cell_size);
+        return (ix * P + iy) * P + iz;
+    }
+
+    // Call fn(neighbor_index) for all indices within radius of (x,y,z)
+    template<typename Fn>
+    void for_neighbors(double x, double y, double z, double radius,
+                       Fn &&fn) const {
+        double r2 = radius * radius;
+        auto fi = [](double v, double cs) -> int64_t {
+            return (int64_t)std::floor(v / cs);
+        };
+        int64_t cx = fi(x, cell_size), cy = fi(y, cell_size),
+                cz = fi(z, cell_size);
+        for (int64_t dx = -1; dx <= 1; dx++)
+            for (int64_t dy = -1; dy <= 1; dy++)
+                for (int64_t dz = -1; dz <= 1; dz++) {
+                    int64_t key = ((cx+dx)*P + (cy+dy))*P + (cz+dz);
+                    auto it = cells.find(key);
+                    if (it == cells.end()) continue;
+                    for (int j : it->second) {
+                        double ddx = x - fn.xyz[j*3];
+                        double ddy = y - fn.xyz[j*3+1];
+                        double ddz = z - fn.xyz[j*3+2];
+                        if (ddx*ddx+ddy*ddy+ddz*ddz <= r2)
+                            fn(j);
+                    }
+                }
+    }
+};
+
+/* ── Anchor contact seeds (transform-independent, spatial grid) ─ */
 
 inline void build_anchor_contact_seeds(
     const double *pred, const double *native, const uint8_t *valid,
@@ -119,31 +183,52 @@ inline void build_anchor_contact_seeds(
     int V = (int)vidx.size();
     if (V < 3) return;
 
+    // Collect existing seed hashes for dedup
+    std::unordered_set<uint64_t> seen_hashes;
+    for (int k = 0; k < K; k++)
+        seen_hashes.insert(hash_mask(&masks[k * N], N));
+
     for (int ri = 0; ri < nrad; ri++) {
         double rad = radii[ri];
         if (rad <= 0) continue;
         double rad_sq = rad * rad;
         double tol = std::max(0.5, rad * 0.25);
 
-        // Count consistent neighbors per valid residue
+        // Build spatial grid over pred coordinates for this radius
+        SpatialGrid grid(pred, vidx, rad);
+
+        // Count consistent neighbors per valid residue using grid
         std::vector<int> counts(V, 0);
         for (int a = 0; a < V; a++) {
             int i = vidx[a];
             counts[a] = 1; // self
-            for (int b = 0; b < V; b++) {
-                if (a == b) continue;
-                int j = vidx[b];
-                double pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
-                      pdz=pred[i*3+2]-pred[j*3+2];
-                double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
-                if (pd2 > rad_sq) continue;
-                double ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
-                      ndz=native[i*3+2]-native[j*3+2];
-                double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
-                if (nd2 > rad_sq) continue;
-                if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
-                    counts[a]++;
-            }
+            // Query grid for pred-neighbors of residue i
+            int64_t cx = (int64_t)std::floor(pred[i*3] / rad);
+            int64_t cy = (int64_t)std::floor(pred[i*3+1] / rad);
+            int64_t cz = (int64_t)std::floor(pred[i*3+2] / rad);
+            for (int64_t dx = -1; dx <= 1; dx++)
+                for (int64_t dy = -1; dy <= 1; dy++)
+                    for (int64_t dz = -1; dz <= 1; dz++) {
+                        int64_t key = ((cx+dx)*SpatialGrid::P +
+                                       (cy+dy))*SpatialGrid::P + (cz+dz);
+                        auto it = grid.cells.find(key);
+                        if (it == grid.cells.end()) continue;
+                        for (int j : it->second) {
+                            if (j == i) continue;
+                            double pdx=pred[i*3]-pred[j*3],
+                                   pdy=pred[i*3+1]-pred[j*3+1],
+                                   pdz=pred[i*3+2]-pred[j*3+2];
+                            double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
+                            if (pd2 > rad_sq) continue;
+                            double ndx=native[i*3]-native[j*3],
+                                   ndy=native[i*3+1]-native[j*3+1],
+                                   ndz=native[i*3+2]-native[j*3+2];
+                            double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
+                            if (nd2 > rad_sq) continue;
+                            if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
+                                counts[a]++;
+                        }
+                    }
         }
         // Sort candidates by count descending
         std::vector<std::pair<int,int>> cands;
@@ -158,30 +243,39 @@ inline void build_anchor_contact_seeds(
             int i = vidx[a];
             std::vector<uint8_t> mask(N, 0);
             int mc = 0;
-            for (int b = 0; b < V; b++) {
-                int j = vidx[b];
-                if (a == b) { mask[j] = 1; mc++; continue; }
-                double pdx=pred[i*3]-pred[j*3], pdy=pred[i*3+1]-pred[j*3+1],
-                      pdz=pred[i*3+2]-pred[j*3+2];
-                double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
-                if (pd2 > rad_sq) continue;
-                double ndx=native[i*3]-native[j*3], ndy=native[i*3+1]-native[j*3+1],
-                      ndz=native[i*3+2]-native[j*3+2];
-                double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
-                if (nd2 > rad_sq) continue;
-                if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
-                    { mask[j] = 1; mc++; }
-            }
+            // Rebuild neighborhood using grid
+            int64_t cx2 = (int64_t)std::floor(pred[i*3] / rad);
+            int64_t cy2 = (int64_t)std::floor(pred[i*3+1] / rad);
+            int64_t cz2 = (int64_t)std::floor(pred[i*3+2] / rad);
+            mask[i] = 1; mc = 1;
+            for (int64_t dx = -1; dx <= 1; dx++)
+                for (int64_t dy = -1; dy <= 1; dy++)
+                    for (int64_t dz = -1; dz <= 1; dz++) {
+                        int64_t key = ((cx2+dx)*SpatialGrid::P +
+                                       (cy2+dy))*SpatialGrid::P + (cz2+dz);
+                        auto it = grid.cells.find(key);
+                        if (it == grid.cells.end()) continue;
+                        for (int j : it->second) {
+                            if (j == i) continue;
+                            double pdx=pred[i*3]-pred[j*3],
+                                   pdy=pred[i*3+1]-pred[j*3+1],
+                                   pdz=pred[i*3+2]-pred[j*3+2];
+                            double pd2 = pdx*pdx+pdy*pdy+pdz*pdz;
+                            if (pd2 > rad_sq) continue;
+                            double ndx=native[i*3]-native[j*3],
+                                   ndy=native[i*3+1]-native[j*3+1],
+                                   ndz=native[i*3+2]-native[j*3+2];
+                            double nd2 = ndx*ndx+ndy*ndy+ndz*ndz;
+                            if (nd2 > rad_sq) continue;
+                            if (std::abs(std::sqrt(pd2)-std::sqrt(nd2)) <= tol)
+                                { mask[j] = 1; mc++; }
+                        }
+                    }
             if (mc < 3) continue;
-            // Deduplicate against existing seeds
-            bool dup = false;
-            for (int k = 0; k < K && !dup; k++) {
-                bool same = true;
-                for (int n = 0; n < N && same; n++)
-                    same = (mask[n] == masks[k*N+n]);
-                dup = same;
-            }
-            if (dup) continue;
+            // Hash-based deduplication
+            uint64_t h = hash_mask(mask.data(), N);
+            if (seen_hashes.count(h)) continue;
+            seen_hashes.insert(h);
             masks.insert(masks.end(), mask.begin(), mask.end());
             K++; added++;
         }

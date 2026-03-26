@@ -23,18 +23,19 @@ inline bool indialign_use_parallel(int work_items, int min_work_per_thread = 4) 
 #endif
 }
 
+// Caller provides pre-allocated workspace (work, sel) of size N each
+// to avoid per-call allocation in the hot path.
 inline void iterative_seed_refine(const double *pred, const double *native,
                                   const uint8_t *valid,
                                   const uint8_t *seed_mask, double d0_search,
                                   int N, int max_iter,
-                                  double *R, double *t) {
-    uint8_t work[4096];
+                                  double *R, double *t,
+                                  uint8_t *work, uint8_t *sel) {
     for (int i = 0; i < N; i++) work[i] = seed_mask[i] & valid[i];
     kabsch(pred, native, work, N, R, t);
     double d0s_sq = d0_search * d0_search;
     int prev_cnt = -1;
     for (int iter = 0; iter < max_iter; iter++) {
-        uint8_t sel[4096];
         int cnt = 0;
         for (int i = 0; i < N; i++) {
             if (!valid[i]) { sel[i] = 0; continue; }
@@ -63,7 +64,7 @@ inline SeedResult evaluate_seed_bank(
     const uint8_t *seeds, int K,
     const double *d0_candidates, int C,
     double d0, double score_d8, double Lnorm, int N, int max_iter,
-    bool use_score_d8 = true)
+    bool use_score_d8 = true, double early_term = 1.0)
 {
     SeedResult best;
     best.score = -1e30;
@@ -77,11 +78,14 @@ inline SeedResult evaluate_seed_bank(
 
     if (!indialign_use_parallel(work_items)) {
         double R[9], t[3];
+        std::vector<uint8_t> ws_work(N), ws_sel(N);
         for (int k = 0; k < K; k++) {
+            if (best.score >= early_term) break;
             for (int c = 0; c < C; c++) {
                 const uint8_t *seed = seeds + k * N;
                 iterative_seed_refine(pred, native, valid, seed,
-                                      d0_candidates[c], N, max_iter, R, t);
+                                      d0_candidates[c], N, max_iter, R, t,
+                                      ws_work.data(), ws_sel.data());
                 double sc = score_candidate(R, t);
                 if (sc > best.score) {
                     best.score = sc;
@@ -93,18 +97,28 @@ inline SeedResult evaluate_seed_bank(
         return best;
     }
 
+    double shared_best = -1e30;
+
     #pragma omp parallel
     {
         SeedResult local_best;
         local_best.score = -1e30;
         double R[9], t[3];
+        std::vector<uint8_t> ws_work(N), ws_sel(N);
 
         #pragma omp for collapse(2) schedule(dynamic)
         for (int k = 0; k < K; k++) {
             for (int c = 0; c < C; c++) {
+                // Early termination: skip if already near-perfect
+                double sb;
+                #pragma omp atomic read
+                sb = shared_best;
+                if (sb >= early_term) continue;
+
                 const uint8_t *seed = seeds + k * N;
                 iterative_seed_refine(pred, native, valid, seed,
-                                      d0_candidates[c], N, max_iter, R, t);
+                                      d0_candidates[c], N, max_iter, R, t,
+                                      ws_work.data(), ws_sel.data());
                 double sc = score_candidate(R, t);
                 if (sc > local_best.score) {
                     local_best.score = sc;
@@ -117,6 +131,7 @@ inline SeedResult evaluate_seed_bank(
         #pragma omp critical
         {
             if (local_best.score > best.score) best = local_best;
+            if (local_best.score > shared_best) shared_best = local_best.score;
         }
     }
     return best;

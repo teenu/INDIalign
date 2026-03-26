@@ -22,7 +22,10 @@ class NativeConfig(ctypes.Structure):
                 ("use_fragment_search", ctypes.c_int),
                 ("max_iter", ctypes.c_int), ("dp_iter", ctypes.c_int),
                 ("max_mem_gb", ctypes.c_double),
-                ("request_cuda", ctypes.c_int)]
+                ("request_cuda", ctypes.c_int),
+                ("rescue_score_1", ctypes.c_double),
+                ("rescue_score_2", ctypes.c_double),
+                ("early_term_score", ctypes.c_double)]
 
 class NativePairInput(ctypes.Structure):
     _fields_ = [("length", ctypes.c_int),
@@ -158,8 +161,8 @@ INDIalign runs a multi-stage pipeline. Each stage produces candidate (R, t) supe
 
 | Stage | Source | Description |
 |---|---|---|
-| 1. Seed generation | `seeds.h` | Fragment seeds at multiple lengths + transform-independent anchor contact seeds |
-| 2. Seed bank evaluation | `search.h` | K seeds x C d0-candidates, each refined by iterative Kabsch with convergence detection |
+| 1. Seed generation | `seeds.h` | Fragment seeds at multiple lengths + transform-independent anchor contact seeds (spatial-grid accelerated) |
+| 2. Seed bank evaluation | `search.h` | K seeds x C d0-candidates, each refined by iterative Kabsch with convergence detection and early termination |
 | 3. SS-based alignment | `ss.h` | Secondary structure from C1' geometry, NW alignment (pure SS + combined SS/structure) |
 | 4. Gapless threading | `threading.h` | Offset alignments pred[i] -> native[i-k], Kabsch + iterative refinement |
 | 5. Rescue strategies | `rescue.h` | Local fragment DP + threading DP, activated at score < 0.5 and < 0.3 |
@@ -171,9 +174,10 @@ INDIalign runs a multi-stage pipeline. Each stage produces candidate (R, t) supe
 
 ### Key Design Decisions
 
-- **Anchor contact seeds** (`seeds.h`): Identify residue pairs with consistent inter-residue distances in both structures, without needing an initial (R, t). Effective starting points for hard cases.
+- **Anchor contact seeds** (`seeds.h`): Identify residue pairs with consistent inter-residue distances in both structures, without needing an initial (R, t). Effective starting points for hard cases. Uses a spatial grid to reduce neighbor lookups from O(V^2) to O(V * k_avg).
 - **Cross-index DP with same-index rescoring**: DP alignment finds pred[i] -> native[j] mappings. The resulting (R, t) is always rescored with same-index `tm_score_no_d8` on the full coordinate arrays to maintain scoring integrity.
-- **Progressive rescue**: Rescue strategies activate only when needed (score < 0.5, then < 0.3), avoiding wasted compute on easy targets. This is the primary source of both the accuracy advantage and the speed cost. On very long targets, the dense local-fragment schedule uses a coarser stride to cap worst-case runtime.
+- **Progressive rescue**: Rescue strategies activate only when needed (configurable thresholds, default 0.5 and 0.3), avoiding wasted compute on easy targets. This is the primary source of both the accuracy advantage and the speed cost. On very long targets, the dense local-fragment schedule uses a coarser stride to cap worst-case runtime.
+- **Early termination**: The seed bank evaluation skips remaining seeds once the score exceeds a threshold (default 0.99), significantly speeding up easy cases where a near-perfect alignment is found early.
 - **Fused GPU kernel** (`gpu_kernels.cu`): A single CUDA kernel performs iterative Kabsch refinement + TM-score per seed, using warp-shuffle reductions and shared-memory eigensolve.
 
 ## Code Structure
@@ -254,8 +258,7 @@ int indialign_cuda_available(void);
 
 1. **Speed.** 1.8--3.8x slower than USalign depending on structure size. The multi-strategy pipeline is inherently more expensive.
 2. **Benchmark scope.** PDB benchmarks cover NMR ensembles (27--155 nt), X-ray chain pairs (up to 412 nt), and cross-structure riboswitch/ribozyme families. Performance on protein-RNA complexes or prediction model outputs has not been tested.
-3. **Max length.** Fixed 4096-element arrays in the C core. Sequences longer than 4096 residues are rejected.
-4. **Same-length assumption.** The C API requires pred and native to have the same length N. Structures with different lengths require pre-alignment or padding with invalid masks.
+3. **Same-length assumption.** The C API requires pred and native to have the same length N. Structures with different lengths require pre-alignment or padding with invalid masks.
 
 ## Citation
 
@@ -268,7 +271,7 @@ If you use INDIalign in your research, please cite:
              {TM}-score optimization},
   year    = {2026},
   url     = {https://github.com/teenu/INDIalign},
-  version = {1.0.1}
+  version = {1.1.0}
 }
 ```
 

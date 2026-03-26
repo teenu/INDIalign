@@ -14,6 +14,9 @@ typedef struct {
     int dp_iter;
     double max_mem_gb;
     int request_cuda;
+    double rescue_score_1;   /* trigger rescue if score < this (default 0.5) */
+    double rescue_score_2;   /* trigger dense rescue if score < this (default 0.3) */
+    double early_term_score; /* skip remaining seeds if score >= this (default 0.99) */
 } NativeConfig;
 
 typedef struct {

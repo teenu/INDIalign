@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 
 /* ── d0 normalization (RNA) ────────────────────────────────────── */
 
@@ -58,6 +59,36 @@ inline void jacobi4(double A[4][4], double V[4][4]) {
     }
 }
 
+/* ── Covariance → rotation (shared by kabsch variants) ────────── */
+
+inline void cov_to_rotation(const double H[3][3], double *R) {
+    double F[4][4] = {};
+    F[0][0] = H[0][0]+H[1][1]+H[2][2];
+    F[0][1]=F[1][0] = H[1][2]-H[2][1];
+    F[0][2]=F[2][0] = H[2][0]-H[0][2];
+    F[0][3]=F[3][0] = H[0][1]-H[1][0];
+    F[1][1] = H[0][0]-H[1][1]-H[2][2];
+    F[1][2]=F[2][1] = H[0][1]+H[1][0];
+    F[1][3]=F[3][1] = H[2][0]+H[0][2];
+    F[2][2] = -H[0][0]+H[1][1]-H[2][2];
+    F[2][3]=F[3][2] = H[1][2]+H[2][1];
+    F[3][3] = -H[0][0]-H[1][1]+H[2][2];
+    double V[4][4];
+    jacobi4(F, V);
+    int best = 0;
+    for (int i = 1; i < 4; i++)
+        if (F[i][i] > F[best][best]) best = i;
+    double q[4];
+    for (int i = 0; i < 4; i++) q[i] = V[i][best];
+    double qn = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+    if (qn < 1e-12) { q[0]=1; q[1]=q[2]=q[3]=0; }
+    else { for (int i = 0; i < 4; i++) q[i] /= qn; }
+    double q0=q[0],q1=q[1],q2=q[2],q3=q[3];
+    R[0]=q0*q0+q1*q1-q2*q2-q3*q3; R[1]=2*(q1*q2+q0*q3); R[2]=2*(q1*q3-q0*q2);
+    R[3]=2*(q1*q2-q0*q3); R[4]=q0*q0-q1*q1+q2*q2-q3*q3; R[5]=2*(q2*q3+q0*q1);
+    R[6]=2*(q1*q3+q0*q2); R[7]=2*(q2*q3-q0*q1); R[8]=q0*q0-q1*q1-q2*q2+q3*q3;
+}
+
 /* ── Kabsch alignment (Horn quaternion) ───────────────────────── */
 
 inline void kabsch(const double *P, const double *Q,
@@ -86,31 +117,7 @@ inline void kabsch(const double *P, const double *Q,
             for (int c = 0; c < 3; c++)
                 H[r][c] += dp[r] * dq[c];
     }
-    double F[4][4] = {};
-    F[0][0] = H[0][0]+H[1][1]+H[2][2];
-    F[0][1]=F[1][0] = H[1][2]-H[2][1];
-    F[0][2]=F[2][0] = H[2][0]-H[0][2];
-    F[0][3]=F[3][0] = H[0][1]-H[1][0];
-    F[1][1] = H[0][0]-H[1][1]-H[2][2];
-    F[1][2]=F[2][1] = H[0][1]+H[1][0];
-    F[1][3]=F[3][1] = H[2][0]+H[0][2];
-    F[2][2] = -H[0][0]+H[1][1]-H[2][2];
-    F[2][3]=F[3][2] = H[1][2]+H[2][1];
-    F[3][3] = -H[0][0]-H[1][1]+H[2][2];
-    double V[4][4];
-    jacobi4(F, V);
-    int best = 0;
-    for (int i = 1; i < 4; i++)
-        if (F[i][i] > F[best][best]) best = i;
-    double q[4];
-    for (int i = 0; i < 4; i++) q[i] = V[i][best];
-    double qn = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
-    if (qn < 1e-12) { q[0]=1; q[1]=q[2]=q[3]=0; }
-    else { for (int i = 0; i < 4; i++) q[i] /= qn; }
-    double q0=q[0],q1=q[1],q2=q[2],q3=q[3];
-    R[0]=q0*q0+q1*q1-q2*q2-q3*q3; R[1]=2*(q1*q2+q0*q3); R[2]=2*(q1*q3-q0*q2);
-    R[3]=2*(q1*q2-q0*q3); R[4]=q0*q0-q1*q1+q2*q2-q3*q3; R[5]=2*(q2*q3+q0*q1);
-    R[6]=2*(q1*q3+q0*q2); R[7]=2*(q2*q3-q0*q1); R[8]=q0*q0-q1*q1-q2*q2+q3*q3;
+    cov_to_rotation(H, R);
     for (int d = 0; d < 3; d++)
         t[d] = cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]);
 }
@@ -201,31 +208,7 @@ inline void kabsch_weighted(const double *P, const double *Q,
             for (int c = 0; c < 3; c++)
                 H[r][c] += wi * dp[r] * dq[c];
     }
-    double F[4][4] = {};
-    F[0][0] = H[0][0]+H[1][1]+H[2][2];
-    F[0][1]=F[1][0] = H[1][2]-H[2][1];
-    F[0][2]=F[2][0] = H[2][0]-H[0][2];
-    F[0][3]=F[3][0] = H[0][1]-H[1][0];
-    F[1][1] = H[0][0]-H[1][1]-H[2][2];
-    F[1][2]=F[2][1] = H[0][1]+H[1][0];
-    F[1][3]=F[3][1] = H[2][0]+H[0][2];
-    F[2][2] = -H[0][0]+H[1][1]-H[2][2];
-    F[2][3]=F[3][2] = H[1][2]+H[2][1];
-    F[3][3] = -H[0][0]-H[1][1]+H[2][2];
-    double V[4][4];
-    jacobi4(F, V);
-    int best = 0;
-    for (int i = 1; i < 4; i++)
-        if (F[i][i] > F[best][best]) best = i;
-    double q[4];
-    for (int i = 0; i < 4; i++) q[i] = V[i][best];
-    double qn = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
-    if (qn < 1e-12) { q[0]=1; q[1]=q[2]=q[3]=0; }
-    else { for (int i = 0; i < 4; i++) q[i] /= qn; }
-    double q0=q[0],q1=q[1],q2=q[2],q3=q[3];
-    R[0]=q0*q0+q1*q1-q2*q2-q3*q3; R[1]=2*(q1*q2+q0*q3); R[2]=2*(q1*q3-q0*q2);
-    R[3]=2*(q1*q2-q0*q3); R[4]=q0*q0-q1*q1+q2*q2-q3*q3; R[5]=2*(q2*q3+q0*q1);
-    R[6]=2*(q1*q3+q0*q2); R[7]=2*(q2*q3-q0*q1); R[8]=q0*q0-q1*q1-q2*q2+q3*q3;
+    cov_to_rotation(H, R);
     for (int d = 0; d < 3; d++)
         t[d] = cQ[d] - (cP[0]*R[0*3+d]+cP[1]*R[1*3+d]+cP[2]*R[2*3+d]);
 }
@@ -237,7 +220,7 @@ inline void weighted_tm_refine(const double *pred, const double *native,
                                int N, int n_iters, double *R, double *t,
                                double *out_score) {
     double d0sq = std::max(d0*d0, 1e-12);
-    double weights[4096];
+    std::vector<double> weights(N);
     for (int iter = 0; iter < n_iters; iter++) {
         for (int i = 0; i < N; i++) {
             if (!valid[i]) { weights[i] = 0; continue; }
@@ -248,7 +231,7 @@ inline void weighted_tm_refine(const double *pred, const double *native,
             double d2 = dx*dx+dy*dy+dz*dz;
             weights[i] = 1.0 / (1.0 + d2/d0sq);
         }
-        kabsch_weighted(pred, native, valid, weights, N, R, t);
+        kabsch_weighted(pred, native, valid, weights.data(), N, R, t);
     }
     *out_score = tm_score_no_d8(pred, native, valid, R, t, d0, Lnorm, N);
 }

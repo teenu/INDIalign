@@ -17,7 +17,7 @@ inline void assign_rna_ss(const double *xyz, const uint8_t *v, int N,
                           char *ss) {
     for (int i = 0; i < N; i++) ss[i] = 'L';
 
-    // Detect base pairs: C1'-C1' distance in [9.0, 12.0]Å, |i-j|>3
+    // Detect base pairs: C1'-C1' distance in [9.0, 12.0]A, |i-j|>3
     // Require consecutive stacking: (i,j) and (i+1,j-1) both paired
     auto d2 = [&](int a, int b) {
         double dx = xyz[a*3]-xyz[b*3], dy = xyz[a*3+1]-xyz[b*3+1],
@@ -56,8 +56,8 @@ inline void assign_rna_ss(const double *xyz, const uint8_t *v, int N,
 inline int ss_nw_align(const char *ss_p, const char *ss_n,
                        const uint8_t *pv, const uint8_t *nv, int N,
                        int *ap, int *an) {
-    int pv_map[4096], nv_map[4096];
-    char sp[4096], sn[4096];
+    std::vector<int> pv_map(N), nv_map(N);
+    std::vector<char> sp(N), sn(N);
     int plen = 0, nlen = 0;
     for (int i = 0; i < N; i++)
         if (pv[i]) { pv_map[plen] = i; sp[plen++] = ss_p[i]; }
@@ -74,7 +74,7 @@ inline int ss_nw_align(const char *ss_p, const char *ss_n,
     std::vector<int8_t> trace;
     nw_dp(smat.data(), plen, nlen, H, trace, -1.0);
     int na = nw_traceback(trace, plen, nlen, ap, an,
-                          std::min(std::min(plen, nlen), 4096));
+                          std::min(plen, nlen));
     for (int i = 0; i < na; i++) {
         ap[i] = pv_map[ap[i]];
         an[i] = nv_map[an[i]];
@@ -97,12 +97,12 @@ inline SeedResult evaluate_ss_seeds(
     double I[9]={1,0,0,0,1,0,0,0,1}; std::memcpy(best.R,I,72);
     best.t[0]=best.t[1]=best.t[2]=0;
 
-    int ap[4096], an[4096];
+    std::vector<int> ap(N), an(N);
 
     // IA2: pure SS NW
-    int na = ss_nw_align(ss_p, ss_n, pv, nv, N, ap, an);
+    int na = ss_nw_align(ss_p, ss_n, pv, nv, N, ap.data(), an.data());
     if (na >= 3) {
-        auto det = alignment_detailed_search(pred, native, ap, an, na,
+        auto det = alignment_detailed_search(pred, native, ap.data(), an.data(), na,
                                              d0, d0s, sd8, Lnorm, N, true);
         if (det.score > best.score) best = det;
         if (dp_iter > 0) {
@@ -114,7 +114,7 @@ inline SeedResult evaluate_ss_seeds(
     }
 
     // IA4: combined structure + SS scoring
-    int pv_map[4096], nv_map[4096];
+    std::vector<int> pv_map(N), nv_map(N);
     int plen = 0, nlen = 0;
     for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
     for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
@@ -142,14 +142,14 @@ inline SeedResult evaluate_ss_seeds(
         std::vector<double> H;
         std::vector<int8_t> trace;
         nw_dp(smat.data(), plen, nlen, H, trace, -1.0);
-        na = nw_traceback(trace, plen, nlen, ap, an,
-                          std::min(std::min(plen, nlen), 4096));
+        na = nw_traceback(trace, plen, nlen, ap.data(), an.data(),
+                          std::min(plen, nlen));
         for (int i = 0; i < na; i++) {
             ap[i] = pv_map[ap[i]];
             an[i] = nv_map[an[i]];
         }
         if (na >= 3) {
-            auto det = alignment_detailed_search(pred, native, ap, an, na,
+            auto det = alignment_detailed_search(pred, native, ap.data(), an.data(), na,
                                                  d0, d0s, sd8, Lnorm, N, true);
             if (det.score > best.score) best = det;
             if (dp_iter > 0) {

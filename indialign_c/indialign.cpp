@@ -30,6 +30,7 @@ static SeedResult do_tmscore_search(
     const double *pred, const double *native,
     const uint8_t *valid, const uint8_t *pv, const uint8_t *nv,
     int N, double Lnorm, int max_iter, bool use_frag, int dp_iter,
+    double rescue_score_1, double rescue_score_2, double early_term,
     [[maybe_unused]] bool use_cuda)
 {
     const bool profile = std::getenv("INDIALIGN_PROFILE") != nullptr;
@@ -98,16 +99,17 @@ static SeedResult do_tmscore_search(
 #endif
         best = evaluate_seed_bank(pred, native, valid,
                                   smasks.data(), K, d0c_all, C_total,
-                                  d0, sd8, Lnorm, N, max_iter, false);
+                                  d0, sd8, Lnorm, N, max_iter, false,
+                                  early_term);
     profile_stage("seed_bank", stage_start);
 
     // 2b. SS-based alignment seeds (IA2 + IA4) — cross-index, rescore
-    char ss_p[4096], ss_n[4096];
+    std::vector<char> ss_p(N), ss_n(N);
     stage_start = std::chrono::steady_clock::now();
-    assign_rna_ss(pred, pv, N, ss_p);
-    assign_rna_ss(native, nv, N, ss_n);
+    assign_rna_ss(pred, pv, N, ss_p.data());
+    assign_rna_ss(native, nv, N, ss_n.data());
     auto ss = evaluate_ss_seeds(pred, native, valid, pv, nv,
-                                ss_p, ss_n, best.R, best.t,
+                                ss_p.data(), ss_n.data(), best.R, best.t,
                                 d0, d0s, sd8, Lnorm, N, dp_iter);
     rescore(ss);
     if (ss.score > best.score) best = ss;
@@ -124,7 +126,7 @@ static SeedResult do_tmscore_search(
     bool has_cross = false;
     for (int i = 0; i < N && !has_cross; i++)
         has_cross = (pv[i] != nv[i]);
-    if (best.score < 0.5) {
+    if (best.score < rescue_score_1) {
         stage_start = std::chrono::steady_clock::now();
         auto lf = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, false);
@@ -132,7 +134,7 @@ static SeedResult do_tmscore_search(
         if (lf.score > best.score) best = lf;
         profile_stage("local_fragment", stage_start);
     }
-    if (best.score < 0.5) {
+    if (best.score < rescue_score_1) {
         stage_start = std::chrono::steady_clock::now();
         auto th = evaluate_threading_dp(pred, native, valid, pv, nv,
                                          d0, d0s, Lnorm, N);
@@ -140,7 +142,7 @@ static SeedResult do_tmscore_search(
         if (th.score > best.score) best = th;
         profile_stage("threading_dp", stage_start);
     }
-    if (best.score < 0.3) {
+    if (best.score < rescue_score_2) {
         stage_start = std::chrono::steady_clock::now();
         auto dl = evaluate_local_fragment_dp(pred, native, valid, pv, nv,
                                               d0, d0s, Lnorm, N, true);
@@ -168,7 +170,8 @@ static SeedResult do_tmscore_search(
 #endif
             tp = evaluate_seed_bank(pred, native, valid,
                                     topk_mask.data(), 1, d0c_all, C_total,
-                                    d0, sd8, Lnorm, N, max_iter, false);
+                                    d0, sd8, Lnorm, N, max_iter, false,
+                                    early_term);
         if (tp.score > best.score) best = tp;
     }
     profile_stage("topk_seed", stage_start);
@@ -226,8 +229,8 @@ static SeedResult do_tmscore_search(
     // 5b. DP from raw cross-offset Kabsch starting points
     if (dp_iter > 0) {
         stage_start = std::chrono::steady_clock::now();
-        double Pa[4096*3], Qa[4096*3];
-        uint8_t pm[4096];
+        std::vector<double> Pa(N*3), Qa(N*3);
+        std::vector<uint8_t> pm(N);
         int off_stride = std::max(1, N / 10);
         for (int k = -N/2; k <= N/2; k += off_stride) {
             if (k == 0) continue;
@@ -241,7 +244,7 @@ static SeedResult do_tmscore_search(
             }
             if (na < 3) continue;
             double sR[9], st[3];
-            kabsch(Pa, Qa, pm, na, sR, st);
+            kabsch(Pa.data(), Qa.data(), pm.data(), na, sR, st);
             auto tdp = dp_refine(pred, native, valid, pv, nv,
                                  sR, st, d0, d0s, sd8, Lnorm,
                                  N, dp_iter, true);
@@ -273,20 +276,25 @@ void indialign_default_config(NativeConfig *cfg) {
     cfg->dp_iter = 1;
     cfg->max_mem_gb = 20.0;
     cfg->request_cuda = 0;
+    cfg->rescue_score_1 = 0.5;
+    cfg->rescue_score_2 = 0.3;
+    cfg->early_term_score = 0.99;
 }
 
 int indialign_tmscore_search(const NativePairInput *inp,
                              const NativeConfig *cfg,
                              NativePairResult *out) {
     int N = inp->length;
-    if (N <= 0 || N > 4096) return -1;
+    if (N <= 0) return -1;
 
     auto res = do_tmscore_search(
         inp->pred_xyz, inp->native_xyz,
         inp->valid_mask, inp->pred_valid_mask, inp->native_valid_mask,
         N, inp->lnorm,
         cfg->max_iter, cfg->use_fragment_search != 0,
-        cfg->dp_iter, cfg->request_cuda != 0);
+        cfg->dp_iter,
+        cfg->rescue_score_1, cfg->rescue_score_2, cfg->early_term_score,
+        cfg->request_cuda != 0);
 
     out->score = res.score;
     for (int i = 0; i < 9; i++) out->rotation[i] = res.R[i];

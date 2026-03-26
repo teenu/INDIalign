@@ -64,7 +64,7 @@ inline SeedResult dp_refine_chunk(
     best.t[0]=best.t[1]=best.t[2]=0;
 
     // Map valid indices for compact DP (plen×nlen instead of N×N)
-    int pv_map[4096], nv_map[4096];
+    std::vector<int> pv_map(N), nv_map(N);
     int plen = 0, nlen = 0;
     for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
     for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
@@ -72,7 +72,7 @@ inline SeedResult dp_refine_chunk(
 
     std::vector<double> moved(N*3), smat(plen * nlen), H_nw;
     std::vector<int8_t> trace_nw;
-    int ap[4096], an[4096];
+    std::vector<int> ap(std::min(plen, nlen)), an(std::min(plen, nlen));
     double d0_dp = std::max(d0, 1.0);
     double d0sq_dp = std::max(d0_dp*d0_dp, 1e-12), sd8sq = score_d8*score_d8;
     double d0sq_s = std::max(d0*d0, 1e-12);
@@ -97,8 +97,8 @@ inline SeedResult dp_refine_chunk(
                 }
             }
             nw_dp(smat.data(), plen, nlen, H_nw, trace_nw, gap_opens[g]);
-            int na = nw_traceback(trace_nw, plen, nlen, ap, an,
-                                  std::min(std::min(plen,nlen), 4096));
+            int na = nw_traceback(trace_nw, plen, nlen, ap.data(), an.data(),
+                                  std::min(plen, nlen));
             for (int i = 0; i < na; i++) {
                 ap[i] = pv_map[ap[i]];
                 an[i] = nv_map[an[i]];
@@ -126,7 +126,7 @@ inline SeedResult dp_refine_chunk(
             std::memcpy(itR, newR, 72); std::memcpy(itt, newt, 24);
             bool use_frag = !d0_search_lite;
             auto det = alignment_detailed_search(
-                pred, native, ap, an, na,
+                pred, native, ap.data(), an.data(), na,
                 d0, d0_search, score_d8, Lnorm, N, use_frag);
             if (det.score > it_score) {
                 std::memcpy(itR, det.R, 72);

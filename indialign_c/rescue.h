@@ -58,7 +58,7 @@ inline SeedResult evaluate_local_fragment_dp(
     best.t[0]=best.t[1]=best.t[2]=0;
 
     // Map valid-count indices to original array indices
-    int pv_map[4096], nv_map[4096];
+    std::vector<int> pv_map(N), nv_map(N);
     int plen = 0, nlen = 0;
     for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
     for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
@@ -129,7 +129,7 @@ inline SeedResult evaluate_threading_dp(
     best.t[0]=best.t[1]=best.t[2]=0;
 
     // Map valid-count indices to original array indices
-    int pv_map[4096], nv_map[4096];
+    std::vector<int> pv_map(N), nv_map(N);
     int plen = 0, nlen = 0;
     for (int i = 0; i < N; i++) if (pv[i]) pv_map[plen++] = i;
     for (int i = 0; i < N; i++) if (nv[i]) nv_map[nlen++] = i;
@@ -150,14 +150,14 @@ inline SeedResult evaluate_threading_dp(
         int overlap = std::min(plen - ps, nlen - ns);
         if (overlap < 3) return;
 
-        int ap[4096], an[4096];
+        std::vector<int> ap(overlap), an(overlap);
         for (int i = 0; i < overlap; i++) {
             ap[i] = pv_map[ps+i];
             an[i] = nv_map[ns+i];
         }
 
         auto det = alignment_detailed_search(
-            pred, native, ap, an, overlap,
+            pred, native, ap.data(), an.data(), overlap,
             d0, d0_search, 100.0, Lnorm, N, true, 8, 5);
 
         auto dp = dp_refine(pred, native, valid, pv, nv,

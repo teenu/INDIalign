@@ -6,18 +6,21 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 /* Same-index iterative refinement from a given R,t starting point.
    Unlike iterative_seed_refine, preserves the input R,t as starting
-   point instead of overwriting with a seed-mask Kabsch. */
+   point instead of overwriting with a seed-mask Kabsch.
+   Caller provides sel workspace of size N. */
 inline void refine_from_rt(
     const double *pred, const double *native, const uint8_t *valid,
-    double d0_search, int N, int n_iter, double *R, double *t)
+    double d0_search, int N, int n_iter, double *R, double *t,
+    uint8_t *sel)
 {
     double d0s_sq = d0_search * d0_search;
     int prev_cnt = -1;
     for (int iter = 0; iter < n_iter; iter++) {
-        uint8_t sel[4096]; int cnt = 0;
+        int cnt = 0;
         for (int i = 0; i < N; i++) {
             if (!valid[i]) { sel[i] = 0; continue; }
             double mx = pred[i*3]*R[0]+pred[i*3+1]*R[3]+pred[i*3+2]*R[6]+t[0];
@@ -48,8 +51,8 @@ inline SeedResult gapless_threading_search(
     if (k_range <= 0) return best;
     int stride = std::max(1, (2 * k_range + 99) / 100);
 
-    double Pa[4096*3], Qa[4096*3];
-    uint8_t pmask[4096];
+    std::vector<double> Pa(N * 3), Qa(N * 3);
+    std::vector<uint8_t> pmask(N), sel_ws(N);
 
     for (int k = -k_range; k <= k_range; k += stride) {
         if (k == 0) continue;
@@ -60,12 +63,12 @@ inline SeedResult gapless_threading_search(
             std::memcpy(&Pa[na*3], &pred[i*3], 24);
             std::memcpy(&Qa[na*3], &native[j*3], 24);
             pmask[na++] = 1;
-            if (na >= 4096) break;
         }
         if (na < min_ali) continue;
         double R[9], t[3];
-        kabsch(Pa, Qa, pmask, na, R, t);
-        refine_from_rt(pred, native, valid, d0_search, N, 5, R, t);
+        kabsch(Pa.data(), Qa.data(), pmask.data(), na, R, t);
+        refine_from_rt(pred, native, valid, d0_search, N, 5, R, t,
+                       sel_ws.data());
         double sc = tm_score_no_d8(pred, native, valid, R, t, d0, Lnorm, N);
         if (sc > best.score) {
             best.score = sc;

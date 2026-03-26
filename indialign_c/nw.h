@@ -41,16 +41,16 @@ inline void nw_dp(const double *smat, int Np, int Nn,
 
 inline int nw_traceback(const std::vector<int8_t> &trace, int Np, int Nn,
                         int *align_p, int *align_n, int max_pairs) {
-    int Hn = Nn+1, n_aligned = 0;
+    int Hn = Nn+1;
     int i = Np, j = Nn;
-    int tmp_p[4096], tmp_n[4096];
-    int count = 0;
-    while (i > 0 && j > 0 && count < 4096) {
+    std::vector<int> tmp_p, tmp_n;
+    tmp_p.reserve(std::min(Np, Nn));
+    tmp_n.reserve(std::min(Np, Nn));
+    while (i > 0 && j > 0) {
         int8_t dir = trace[i*Hn+j];
         if (dir == 0) {
-            tmp_p[count] = i-1;
-            tmp_n[count] = j-1;
-            count++;
+            tmp_p.push_back(i-1);
+            tmp_n.push_back(j-1);
             i--; j--;
         } else if (dir == 1) {
             i--;
@@ -58,7 +58,8 @@ inline int nw_traceback(const std::vector<int8_t> &trace, int Np, int Nn,
             j--;
         }
     }
-    n_aligned = std::min(count, max_pairs);
+    int count = (int)tmp_p.size();
+    int n_aligned = std::min(count, max_pairs);
     for (int k = 0; k < n_aligned; k++) {
         align_p[k] = tmp_p[count-1-k];
         align_n[k] = tmp_n[count-1-k];
