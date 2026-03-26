@@ -268,7 +268,7 @@ If you use INDIalign in your research, please cite:
              {TM}-score optimization},
   year    = {2026},
   url     = {https://github.com/teenu/INDIalign},
-  version = {1.0.0}
+  version = {1.0.1}
 }
 ```
 

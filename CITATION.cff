@@ -6,8 +6,8 @@ abstract: "RNA structural alignment via multi-strategy TM-score optimization"
 authors:
   - family-names: Chalapati
     given-names: Sachin
-version: "1.0.0"
-date-released: "2026-03-25"
+version: "1.0.1"
+date-released: "2026-03-26"
 license: MIT
 url: "https://github.com/teenu/INDIalign"
 repository-code: "https://github.com/teenu/INDIalign"
