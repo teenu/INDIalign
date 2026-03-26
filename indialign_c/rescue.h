@@ -30,7 +30,10 @@ inline std::vector<int> local_frag_lengths(int plen, int nlen, bool dense) {
 inline int local_jump(int length, bool dense) {
     int j;
     if (dense) {
-        if (length > 300) j = 15;
+        // Very long dense rescues explode quadratically in window count.
+        // Use a coarser stride there to keep the rescue pass tractable.
+        if (length > 350) j = 50;
+        else if (length > 300) j = 30;
         else if (length > 200) j = 10;
         else j = 5;
         return std::max(1, std::min(j, std::max(1, length/4)));
@@ -76,6 +79,27 @@ inline SeedResult evaluate_local_fragment_dp(
     int nwork = (int)work.size();
     if (nwork == 0) return best;
 
+    auto eval_work_item = [&](int w, SeedResult &dst) {
+        int flen = work[w].flen, ps = work[w].ps, ns = work[w].ns;
+        std::vector<double> Pf(flen*3), Qf(flen*3);
+        std::vector<uint8_t> fm(flen, 1);
+        for (int i = 0; i < flen; i++) {
+            std::memcpy(&Pf[i*3], &pred[pv_map[ps+i]*3], 24);
+            std::memcpy(&Qf[i*3], &native[nv_map[ns+i]*3], 24);
+        }
+        double sR[9], st[3];
+        kabsch(Pf.data(), Qf.data(), fm.data(), flen, sR, st);
+        auto dp = dp_refine(pred, native, valid, pv, nv,
+                            sR, st, d0, d0_search, 100.0,
+                            Lnorm, N, 2, true);
+        if (dp.score > dst.score) dst = dp;
+    };
+
+    if (!indialign_use_parallel(nwork, 2)) {
+        for (int w = 0; w < nwork; w++) eval_work_item(w, best);
+        return best;
+    }
+
     #pragma omp parallel
     {
         SeedResult local_best;
@@ -83,19 +107,7 @@ inline SeedResult evaluate_local_fragment_dp(
 
         #pragma omp for schedule(dynamic)
         for (int w = 0; w < nwork; w++) {
-            int flen = work[w].flen, ps = work[w].ps, ns = work[w].ns;
-            std::vector<double> Pf(flen*3), Qf(flen*3);
-            std::vector<uint8_t> fm(flen, 1);
-            for (int i = 0; i < flen; i++) {
-                std::memcpy(&Pf[i*3], &pred[pv_map[ps+i]*3], 24);
-                std::memcpy(&Qf[i*3], &native[nv_map[ns+i]*3], 24);
-            }
-            double sR[9], st[3];
-            kabsch(Pf.data(), Qf.data(), fm.data(), flen, sR, st);
-            auto dp = dp_refine(pred, native, valid, pv, nv,
-                                sR, st, d0, d0_search, 100.0,
-                                Lnorm, N, 2, true);
-            if (dp.score > local_best.score) local_best = dp;
+            eval_work_item(w, local_best);
         }
 
         #pragma omp critical
@@ -131,6 +143,36 @@ inline SeedResult evaluate_threading_dp(
     int noff = (int)offsets.size();
     if (noff == 0) return best;
 
+    auto eval_offset = [&](int oi, SeedResult &dst) {
+        int offset = offsets[oi];
+        int ps = std::max(offset, 0);
+        int ns = std::max(-offset, 0);
+        int overlap = std::min(plen - ps, nlen - ns);
+        if (overlap < 3) return;
+
+        int ap[4096], an[4096];
+        for (int i = 0; i < overlap; i++) {
+            ap[i] = pv_map[ps+i];
+            an[i] = nv_map[ns+i];
+        }
+
+        auto det = alignment_detailed_search(
+            pred, native, ap, an, overlap,
+            d0, d0_search, 100.0, Lnorm, N, true, 8, 5);
+
+        auto dp = dp_refine(pred, native, valid, pv, nv,
+                            det.R, det.t, d0, d0_search, 100.0,
+                            Lnorm, N, 1, true);
+        SeedResult cand = (dp.score > det.score) ? dp : det;
+        cand.score = std::max(det.score, dp.score);
+        if (cand.score > dst.score) dst = cand;
+    };
+
+    if (!indialign_use_parallel(noff, 2)) {
+        for (int oi = 0; oi < noff; oi++) eval_offset(oi, best);
+        return best;
+    }
+
     #pragma omp parallel
     {
         SeedResult local_best;
@@ -138,34 +180,7 @@ inline SeedResult evaluate_threading_dp(
 
         #pragma omp for schedule(dynamic)
         for (int oi = 0; oi < noff; oi++) {
-            int offset = offsets[oi];
-            int ps = std::max(offset, 0);
-            int ns = std::max(-offset, 0);
-            int overlap = std::min(plen - ps, nlen - ns);
-            if (overlap < 3) continue;
-
-            int ap[4096], an[4096];
-            for (int i = 0; i < overlap; i++) {
-                ap[i] = pv_map[ps+i];
-                an[i] = nv_map[ns+i];
-            }
-
-            auto det = alignment_detailed_search(
-                pred, native, ap, an, overlap,
-                d0, d0_search, 100.0, Lnorm, N, true, 8, 5);
-
-            auto dp = dp_refine(pred, native, valid, pv, nv,
-                                det.R, det.t, d0, d0_search, 100.0,
-                                Lnorm, N, 1, true);
-            double cand_score = std::max(det.score, dp.score);
-            SeedResult cand;
-            if (dp.score > det.score) {
-                cand = dp;
-            } else {
-                cand = det;
-            }
-            cand.score = cand_score;
-            if (cand.score > local_best.score) local_best = cand;
+            eval_offset(oi, local_best);
         }
 
         #pragma omp critical

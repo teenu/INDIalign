@@ -2,7 +2,7 @@
 
 RNA structural alignment via multi-strategy TM-score optimization.
 
-INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. Across three benchmarks on real PDB structures and synthetic pairs, INDIalign consistently finds higher-scoring superpositions than USalign (**54--84% win rate**, p < 0.004), with the largest gains on hard targets. It is **1.8--3.5x slower** depending on structure size and difficulty.
+INDIalign finds the rigid-body superposition (rotation **R**, translation **t**) that maximizes the RNA TM-score between two sets of C1' coordinates. It uses a multi-strategy seed-and-refine pipeline that searches more broadly than a single alignment heuristic. Across three benchmarks on real PDB structures and synthetic pairs, INDIalign consistently finds higher-scoring superpositions than USalign (**54--84% win rate**, p < 0.004), with the largest gains on hard targets. It is **typically 1.8--3.5x slower** depending on structure size and difficulty.
 
 ## Quick Start
 
@@ -137,7 +137,7 @@ Speed on synthetic pairs: INDIalign 83 ms/pair, USalign 22 ms/pair (3.8x).
 
 ### Speed
 
-INDIalign trades speed for search breadth. The speed ratio depends on structure size and difficulty: 1.8x on short NMR structures (27--77 nt), 3.5x on challenging PDB pairs, 3.8x on longer synthetic pairs (40--300 nt). If throughput is the primary constraint, USalign is the better choice.
+INDIalign trades speed for search breadth. The speed ratio depends on structure size and difficulty: 1.8x on short NMR structures (27--77 nt), 3.5x on challenging PDB pairs, 3.8x on longer synthetic pairs (40--300 nt). Very long hard targets can trigger expensive rescue passes; the dense local-fragment rescue now uses a coarser stride on long inputs to reduce worst-case CPU time without changing the overall search pipeline. If throughput is the primary constraint, USalign is the better choice.
 
 ### Reproducing
 
@@ -149,6 +149,8 @@ python pdb_benchmark.py            # NMR model-vs-model (128 pairs)
 python pdb_hard_benchmark.py       # challenging PDB pairs (72 pairs)
 python fair_benchmark.py 500       # synthetic pairs (500 pairs)
 ```
+
+Run the benchmark scripts sequentially if you want meaningful wall-clock timing comparisons.
 
 ## Algorithm
 
@@ -171,7 +173,7 @@ INDIalign runs a multi-stage pipeline. Each stage produces candidate (R, t) supe
 
 - **Anchor contact seeds** (`seeds.h`): Identify residue pairs with consistent inter-residue distances in both structures, without needing an initial (R, t). Effective starting points for hard cases.
 - **Cross-index DP with same-index rescoring**: DP alignment finds pred[i] -> native[j] mappings. The resulting (R, t) is always rescored with same-index `tm_score_no_d8` on the full coordinate arrays to maintain scoring integrity.
-- **Progressive rescue**: Rescue strategies activate only when needed (score < 0.5, then < 0.3), avoiding wasted compute on easy targets. This is the primary source of both the accuracy advantage and the speed cost.
+- **Progressive rescue**: Rescue strategies activate only when needed (score < 0.5, then < 0.3), avoiding wasted compute on easy targets. This is the primary source of both the accuracy advantage and the speed cost. On very long targets, the dense local-fragment schedule uses a coarser stride to cap worst-case runtime.
 - **Fused GPU kernel** (`gpu_kernels.cu`): A single CUDA kernel performs iterative Kabsch refinement + TM-score per seed, using warp-shuffle reductions and shared-memory eigensolve.
 
 ## Code Structure
@@ -212,6 +214,14 @@ cd indialign_c && make gpu CUDA_ARCH=sm_90
 **Requirements:** C++20 compiler (g++ 10+ or clang 13+), OpenMP. Optional: CUDA toolkit 12+ for GPU acceleration. The GPU path uses float32 internally and falls back to CPU on any CUDA error.
 
 **macOS:** Apple Clang does not ship with OpenMP. Install it via `brew install libomp` and add `-I$(brew --prefix libomp)/include -L$(brew --prefix libomp)/lib` to CXXFLAGS/LDFLAGS, or use GCC (`brew install gcc`).
+
+### Profiling
+
+Set `INDIALIGN_PROFILE=1` to print per-stage timings to `stderr` for a single search call. Set `INDIALIGN_PROFILE_TAG` to prepend an identifier such as a PDB code or pair label.
+
+```bash
+INDIALIGN_PROFILE=1 INDIALIGN_PROFILE_TAG='[1H1K]' python benchmark/pdb_hard_benchmark.py
+```
 
 ## C API
 

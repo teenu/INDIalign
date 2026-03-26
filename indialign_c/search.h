@@ -5,8 +5,23 @@
 #include "seeds.h"
 #include <cstring>
 #include <cmath>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* ── Iterative seed refinement with convergence detection ─────── */
+
+inline bool indialign_use_parallel(int work_items, int min_work_per_thread = 4) {
+#ifdef _OPENMP
+    if (work_items <= 0 || omp_in_parallel()) return false;
+    int threads = omp_get_max_threads();
+    return threads > 1 && work_items >= threads * min_work_per_thread;
+#else
+    (void)work_items;
+    (void)min_work_per_thread;
+    return false;
+#endif
+}
 
 inline void iterative_seed_refine(const double *pred, const double *native,
                                   const uint8_t *valid,
@@ -33,8 +48,7 @@ inline void iterative_seed_refine(const double *pred, const double *native,
         }
         if (cnt >= 3)
             kabsch(pred, native, sel, N, R, t);
-        // Convergence: stop if pair count stabilized (same count implies
-        // same set since distances change monotonically with R,t updates)
+        // Convergence heuristic: stop once the inlier count stabilizes.
         if (cnt == prev_cnt) break;
         prev_cnt = cnt;
     }
@@ -53,6 +67,31 @@ inline SeedResult evaluate_seed_bank(
 {
     SeedResult best;
     best.score = -1e30;
+    int work_items = K * C;
+
+    auto score_candidate = [&](const double *R, const double *t) {
+        if (use_score_d8)
+            return tm_score(pred, native, valid, R, t, d0, Lnorm, score_d8, N);
+        return tm_score_no_d8(pred, native, valid, R, t, d0, Lnorm, N);
+    };
+
+    if (!indialign_use_parallel(work_items)) {
+        double R[9], t[3];
+        for (int k = 0; k < K; k++) {
+            for (int c = 0; c < C; c++) {
+                const uint8_t *seed = seeds + k * N;
+                iterative_seed_refine(pred, native, valid, seed,
+                                      d0_candidates[c], N, max_iter, R, t);
+                double sc = score_candidate(R, t);
+                if (sc > best.score) {
+                    best.score = sc;
+                    std::memcpy(best.R, R, 72);
+                    std::memcpy(best.t, t, 24);
+                }
+            }
+        }
+        return best;
+    }
 
     #pragma omp parallel
     {
@@ -66,11 +105,7 @@ inline SeedResult evaluate_seed_bank(
                 const uint8_t *seed = seeds + k * N;
                 iterative_seed_refine(pred, native, valid, seed,
                                       d0_candidates[c], N, max_iter, R, t);
-                double sc;
-                if (use_score_d8)
-                    sc = tm_score(pred, native, valid, R, t, d0, Lnorm, score_d8, N);
-                else
-                    sc = tm_score_no_d8(pred, native, valid, R, t, d0, Lnorm, N);
+                double sc = score_candidate(R, t);
                 if (sc > local_best.score) {
                     local_best.score = sc;
                     std::memcpy(local_best.R, R, 72);
